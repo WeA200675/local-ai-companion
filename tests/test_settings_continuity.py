@@ -18,6 +18,15 @@ class _DummyBackend:
         pass
 
 
+def _service(store: StateStore) -> MediaService:
+    return MediaService(
+        _DummyModel(),  # type: ignore[arg-type]
+        _DummyBackend(),  # type: ignore[arg-type]
+        store=store,
+        settings=AppSettings(media_reference_enabled=True),
+    )
+
+
 def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
     factory = make_session_factory(tmp_path / "companion.sqlite3")
     store = StateStore(factory)
@@ -53,12 +62,21 @@ def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
 
     first = store.load_character_profile("nova-main")
     first.register_generation("generated/example.png")
+    first.set_reference(17, "generated/reference.png")
     store.save_character_profile(first)
     second = store.load_character_profile("nova-main")
 
     assert second.seed == first.seed
     assert second.generation_count == 1
     assert second.last_media_path == "generated/example.png"
+    assert second.reference_media_id == 17
+    assert second.reference_media_path == "generated/reference.png"
+
+    second.clear_reference()
+    store.save_character_profile(second)
+    cleared = store.load_character_profile("nova-main")
+    assert cleared.reference_media_id is None
+    assert cleared.reference_media_path is None
 
 
 def test_media_history_feedback_updates_character_and_visual_preferences(tmp_path) -> None:
@@ -132,15 +150,59 @@ def test_reference_continuity_uses_newest_liked_existing_file(tmp_path) -> None:
     store.set_media_feedback(first_id, "positive")
     store.set_media_feedback(second_id, "positive")
 
-    service = MediaService(
-        _DummyModel(),  # type: ignore[arg-type]
-        _DummyBackend(),  # type: ignore[arg-type]
-        store=store,
-        settings=AppSettings(media_reference_enabled=True),
-    )
-
+    service = _service(store)
     assert service._reference_path("persona-main") == second
     assert service._reference_path("another-character") is None
+
+
+def test_pinned_reference_beats_newer_liked_image(tmp_path) -> None:
+    factory = make_session_factory(tmp_path / "companion.sqlite3")
+    store = StateStore(factory)
+    anchor = tmp_path / "anchor.png"
+    newer = tmp_path / "newer.png"
+    anchor.write_bytes(b"anchor")
+    newer.write_bytes(b"newer")
+
+    anchor_id = store.record_media_event(
+        path=str(anchor),
+        kind="png",
+        prompt_id="anchor",
+        seed=1,
+        continuity_key="persona-main",
+        intent={"mood": "calm"},
+    )
+    newer_id = store.record_media_event(
+        path=str(newer),
+        kind="png",
+        prompt_id="newer",
+        seed=2,
+        continuity_key="persona-main",
+        intent={"mood": "bold"},
+    )
+    store.set_media_feedback(newer_id, "positive")
+    profile = store.load_character_profile("persona-main")
+    profile.set_reference(anchor_id, str(anchor))
+    store.save_character_profile(profile)
+
+    assert _service(store)._reference_path("persona-main") == anchor
+
+
+def test_video_is_not_used_as_reference_fallback(tmp_path) -> None:
+    factory = make_session_factory(tmp_path / "companion.sqlite3")
+    store = StateStore(factory)
+    video = tmp_path / "liked.mp4"
+    video.write_bytes(b"video")
+    media_id = store.record_media_event(
+        path=str(video),
+        kind="mp4",
+        prompt_id="video",
+        seed=1,
+        continuity_key="persona-main",
+        intent={"mood": "cinematic"},
+    )
+    store.set_media_feedback(media_id, "positive")
+
+    assert _service(store)._reference_path("persona-main") is None
 
 
 def test_trait_learning_respects_bounds_and_rate() -> None:
