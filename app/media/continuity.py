@@ -18,6 +18,8 @@ class CharacterProfile(BaseModel):
     positive_feedback: int = Field(default=0, ge=0)
     negative_feedback: int = Field(default=0, ge=0)
     last_media_path: str | None = None
+    reference_media_id: int | None = Field(default=None, ge=1)
+    reference_media_path: str | None = None
 
     @classmethod
     def create(cls, key: str) -> "CharacterProfile":
@@ -37,3 +39,14 @@ class CharacterProfile(BaseModel):
             self.negative_feedback += 1
         else:
             raise ValueError(f"Unsupported media feedback: {feedback}")
+
+    def set_reference(self, media_id: int, path: str) -> None:
+        clean = path.strip()
+        if media_id < 1 or not clean:
+            raise ValueError("Reference media requires a valid id and local path")
+        self.reference_media_id = media_id
+        self.reference_media_path = clean
+
+    def clear_reference(self) -> None:
+        self.reference_media_id = None
+        self.reference_media_path = None
