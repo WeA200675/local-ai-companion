@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ai.model import OllamaClient
 from app.diagnostics import DiagnosticResult, run_diagnostics
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -41,6 +43,26 @@ class DiagnosticsWorker(QThread):
         self.completed.emit(results)
 
 
+class ModelDiscoveryWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, base_url: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._base_url = base_url.strip()
+
+    def run(self) -> None:
+        client = OllamaClient(model="discovery", base_url=self._base_url, timeout=10.0)
+        try:
+            models = client.list_models()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        finally:
+            client.close()
+        self.completed.emit(models)
+
+
 class SettingsWidget(QWidget):
     settings_saved = Signal(object)
 
@@ -54,9 +76,23 @@ class SettingsWidget(QWidget):
         self.store = store
         self.settings = settings.model_copy(deep=True)
         self._diagnostics_worker: DiagnosticsWorker | None = None
+        self._model_discovery_worker: ModelDiscoveryWorker | None = None
 
-        self.model_name = QLineEdit(settings.model_name)
+        self.model_name = QComboBox()
+        self.model_name.setEditable(True)
+        self.model_name.addItem(settings.model_name)
+        self.model_name.setCurrentText(settings.model_name)
         self.model_url = QLineEdit(settings.model_url)
+        self.model_refresh_button = QPushButton("Modelle laden")
+        self.model_refresh_button.setToolTip(
+            "Installierte Modelle direkt vom lokalen Ollama-Endpunkt laden"
+        )
+
+        model_row = QWidget()
+        model_layout = QHBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.addWidget(self.model_name, 1)
+        model_layout.addWidget(self.model_refresh_button)
 
         self.chat_temperature = QDoubleSpinBox()
         self.chat_temperature.setRange(0.0, 2.0)
@@ -133,7 +169,7 @@ class SettingsWidget(QWidget):
         output_layout.addWidget(output_browse)
 
         form = QFormLayout()
-        form.addRow("Lokales Sprachmodell", self.model_name)
+        form.addRow("Lokales Sprachmodell", model_row)
         form.addRow("Ollama/API-URL", self.model_url)
         form.addRow("Chat-Temperatur", self.chat_temperature)
         form.addRow("Chat-Historie", self.chat_history_messages)
@@ -182,10 +218,54 @@ class SettingsWidget(QWidget):
         layout.addStretch(1)
         layout.addLayout(action_row)
 
+        self.model_refresh_button.clicked.connect(self.discover_models)
         workflow_browse.clicked.connect(self._choose_workflow)
         output_browse.clicked.connect(self._choose_output_dir)
         self.test_button.clicked.connect(self.run_diagnostics)
         self.save_button.clicked.connect(self.save)
+
+    def discover_models(self) -> None:
+        if self._model_discovery_worker is not None and self._model_discovery_worker.isRunning():
+            return
+        base_url = self.model_url.text().strip()
+        if not base_url:
+            QMessageBox.warning(self, "Ollama", "Bitte zuerst eine lokale Ollama/API-URL eintragen.")
+            return
+
+        self.model_refresh_button.setEnabled(False)
+        self.status.setText("Lade installierte Modelle vom lokalen Ollama-Endpunkt …")
+        worker = ModelDiscoveryWorker(base_url, self)
+        worker.completed.connect(self._models_discovered)
+        worker.failed.connect(self._model_discovery_failed)
+        worker.finished.connect(self._model_discovery_finished)
+        self._model_discovery_worker = worker
+        worker.start()
+
+    def _models_discovered(self, models: list[str]) -> None:
+        current = self.model_name.currentText().strip()
+        self.model_name.blockSignals(True)
+        self.model_name.clear()
+        for model in models:
+            self.model_name.addItem(model)
+        if current:
+            self.model_name.setCurrentText(current)
+        elif models:
+            self.model_name.setCurrentIndex(0)
+        self.model_name.blockSignals(False)
+        if models:
+            self.status.setText(f"{len(models)} lokale(s) Modell(e) gefunden.")
+        else:
+            self.status.setText("Ollama ist erreichbar, meldet aber keine installierten Modelle.")
+
+    def _model_discovery_failed(self, error: str) -> None:
+        self.status.setText(f"Modelle konnten nicht geladen werden: {error}")
+
+    def _model_discovery_finished(self) -> None:
+        self.model_refresh_button.setEnabled(True)
+        worker = self._model_discovery_worker
+        self._model_discovery_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _choose_workflow(self) -> None:
         current = self.media_workflow.text().strip()
@@ -210,7 +290,7 @@ class SettingsWidget(QWidget):
 
     def _settings_from_form(self) -> AppSettings:
         return AppSettings(
-            model_name=self.model_name.text(),
+            model_name=self.model_name.currentText(),
             model_url=self.model_url.text(),
             chat_temperature=self.chat_temperature.value(),
             chat_history_messages=self.chat_history_messages.value(),

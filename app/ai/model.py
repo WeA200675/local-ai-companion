@@ -52,6 +52,31 @@ class OllamaClient:
         except httpx.HTTPError:
             return False
 
+    def list_models(self) -> list[str]:
+        """Return installed model names reported by an Ollama-compatible backend."""
+
+        try:
+            response = self._client.get(f"{self.base_url}/api/tags")
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise LocalModelError(f"Could not list local models: {exc}") from exc
+
+        if not isinstance(data, dict):
+            raise LocalModelError("Local model list returned an invalid response")
+        models = data.get("models")
+        if not isinstance(models, list):
+            raise LocalModelError("Local model list is missing the models array")
+
+        names: list[str] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            raw_name = item.get("name") or item.get("model")
+            if isinstance(raw_name, str) and raw_name.strip():
+                names.append(raw_name.strip())
+        return sorted(set(names), key=str.casefold)
+
     def _wire_messages(
         self,
         messages: Iterable[ChatMessage],
