@@ -90,7 +90,7 @@ Each assistant response can be rated with **Mehr davon** or **Weniger davon**. A
 
 This deliberately keeps learning outside the model weights. It makes behavior changes visible, auditable, and reversible instead of silently fine-tuning the underlying language model.
 
-Learning events are stored locally with the proposed trait signals and a short rationale. They are visible in the Persona Lab. Locked traits never move because of learning feedback.
+Learning events are stored locally with the proposed trait signals and a short rationale. They are visible in the Persona Lab. Locked traits never move because of learning feedback. Persona snapshots remain independent, so any learned personality state can be captured and later restored without deleting the newer state first.
 
 ## Local visual generation with ComfyUI
 
