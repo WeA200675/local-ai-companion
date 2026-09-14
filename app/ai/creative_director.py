@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from typing import Literal
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,7 @@ from app.ai.variety import VarietyCard, VarietyRepository
 from app.memory.store import StateStore
 
 DirectorIntensity = Literal["gentle", "balanced", "wild"]
+T = TypeVar("T")
 
 
 class CreativeDirectorConfig(BaseModel):
@@ -124,7 +125,7 @@ class CreativeDirector:
         self.variety = variety
 
     @staticmethod
-    def _choose[T](items: list[T], rng: random.Random | random.SystemRandom) -> T:
+    def _choose(items: list[T], rng: random.Random | random.SystemRandom) -> T:
         if not items:
             raise ValueError("No creative options available")
         return rng.choice(items)
