@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 from app.ai.persona import Trait
+from app.media.service import MediaService
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
 from app.settings import AppSettings
+
+
+class _DummyModel:
+    pass
+
+
+class _DummyBackend:
+    enabled = True
+
+    def close(self) -> None:
+        pass
 
 
 def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
@@ -19,6 +31,9 @@ def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
         media_enabled=True,
         media_workflow=str(tmp_path / "workflow.json"),
         continuity_key="nova-main",
+        media_reference_enabled=True,
+        media_reference_node="12",
+        media_reference_input_key="image",
         media_history_limit=321,
     )
     store.save_settings(settings)
@@ -31,6 +46,9 @@ def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
     assert loaded.chat_num_predict == 900
     assert loaded.media_enabled is True
     assert loaded.continuity_key == "nova-main"
+    assert loaded.media_reference_enabled is True
+    assert loaded.media_reference_node == "12"
+    assert loaded.media_reference_input_key == "image"
     assert loaded.media_history_limit == 321
 
     first = store.load_character_profile("nova-main")
@@ -85,6 +103,44 @@ def test_media_history_feedback_updates_character_and_visual_preferences(tmp_pat
     visual = store.load_visual_preferences()
     assert cleared.negative_feedback == 0
     assert "dominant" not in visual.disliked
+
+
+def test_reference_continuity_uses_newest_liked_existing_file(tmp_path) -> None:
+    factory = make_session_factory(tmp_path / "companion.sqlite3")
+    store = StateStore(factory)
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    first_id = store.record_media_event(
+        path=str(first),
+        kind="png",
+        prompt_id="one",
+        seed=1,
+        continuity_key="persona-main",
+        intent={"mood": "calm"},
+    )
+    second_id = store.record_media_event(
+        path=str(second),
+        kind="png",
+        prompt_id="two",
+        seed=2,
+        continuity_key="persona-main",
+        intent={"mood": "confident"},
+    )
+    store.set_media_feedback(first_id, "positive")
+    store.set_media_feedback(second_id, "positive")
+
+    service = MediaService(
+        _DummyModel(),  # type: ignore[arg-type]
+        _DummyBackend(),  # type: ignore[arg-type]
+        store=store,
+        settings=AppSettings(media_reference_enabled=True),
+    )
+
+    assert service._reference_path("persona-main") == second
+    assert service._reference_path("another-character") is None
 
 
 def test_trait_learning_respects_bounds_and_rate() -> None:
