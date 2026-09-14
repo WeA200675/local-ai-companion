@@ -39,12 +39,19 @@ class ModelWorker(QThread):
         client: OllamaClient,
         messages: list[ChatMessage],
         system_prompt: str,
+        *,
+        temperature: float = 0.85,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._client = client
         self._messages = messages
         self._system_prompt = system_prompt
+        self._temperature = temperature
+        self._num_ctx = num_ctx
+        self._num_predict = num_predict
         self._stop_event = Event()
 
     @property
@@ -60,6 +67,9 @@ class ModelWorker(QThread):
             for chunk in self._client.chat_stream(
                 self._messages,
                 system_prompt=self._system_prompt,
+                temperature=self._temperature,
+                num_ctx=self._num_ctx,
+                num_predict=self._num_predict,
                 should_stop=self._stop_event.is_set,
             ):
                 if self._stop_event.is_set():
@@ -395,7 +405,7 @@ class ChatWidget(QWidget):
         self.store.append_message("user", text)
         self._append_message(ChatMessage(role="user", content=text))
 
-        messages = self.store.list_messages(limit=60)
+        messages = self.store.list_messages(limit=self.settings.chat_history_messages)
         memory_notes = (
             self.store.list_active_memory_summaries(limit=12)
             if self.settings.adaptive_memory_enabled
@@ -408,7 +418,15 @@ class ChatWidget(QWidget):
         )
         self._set_busy(True)
 
-        worker = ModelWorker(self.model, messages, system_prompt, self)
+        worker = ModelWorker(
+            self.model,
+            messages,
+            system_prompt,
+            temperature=self.settings.chat_temperature,
+            num_ctx=self.settings.chat_num_ctx or None,
+            num_predict=self.settings.chat_num_predict or None,
+            parent=self,
+        )
         worker.token_received.connect(self._stream_token)
         worker.completed.connect(self._model_completed)
         worker.stopped.connect(self._model_stopped)
