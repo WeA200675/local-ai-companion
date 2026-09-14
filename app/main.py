@@ -14,6 +14,7 @@ from app.memory.database import make_session_factory
 from app.memory.store import StateStore
 from app.settings import AppSettings
 from app.ui.backup import BackupWidget
+from app.ui.character_studio import CharacterStudio
 from app.ui.chat import ChatWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
@@ -52,6 +53,10 @@ class MainWindow(QMainWindow):
             preference_tags=preference_tags,
         )
         self.memory_lab = MemoryLab(self.store)
+        self.character_studio = CharacterStudio(
+            self.store,
+            key=self.settings.continuity_key,
+        )
         self.media_history = MediaHistoryWidget(
             self.store,
             limit=self.settings.media_history_limit,
@@ -63,15 +68,20 @@ class MainWindow(QMainWindow):
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
         self.chat.memory_changed.connect(self.memory_lab.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
+        self.chat.media_history_changed.connect(self.character_studio.load_profile)
         self.media_history.feedback_changed.connect(
             self.settings_widget._refresh_preference_summary
         )
+        self.media_history.feedback_changed.connect(self.character_studio.load_profile)
+        self.media_history.reference_changed.connect(self.character_studio.load_profile)
+        self.character_studio.profile_changed.connect(lambda _key: self.media_history.refresh())
         self.settings_widget.settings_saved.connect(self._settings_saved)
 
         tabs = QTabWidget()
         tabs.addTab(self.chat, "Chat")
         tabs.addTab(self.persona_lab, "Persona Lab")
         tabs.addTab(self.memory_lab, "Memory")
+        tabs.addTab(self.character_studio, "Character Studio")
         tabs.addTab(self.media_history, "Medien")
         tabs.addTab(self.settings_widget, "Einstellungen")
         tabs.addTab(self.backup_widget, "Backup")
@@ -103,6 +113,7 @@ class MainWindow(QMainWindow):
     def _settings_saved(self, settings: AppSettings) -> None:
         self.settings = settings.model_copy(deep=True)
         self.media_history.set_limit(settings.media_history_limit)
+        self.character_studio.set_key(settings.continuity_key)
 
         if not self.chat.can_reconfigure():
             QMessageBox.information(
