@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from threading import Event
 
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -27,7 +28,10 @@ from app.ui.media_preview import MediaPreview
 
 
 class ModelWorker(QThread):
+    token_received = Signal(str)
     completed = Signal(str)
+    stopped = Signal(str)
+    interrupted = Signal(str, str)
     failed = Signal(str)
 
     def __init__(
@@ -41,17 +45,54 @@ class ModelWorker(QThread):
         self._client = client
         self._messages = messages
         self._system_prompt = system_prompt
+        self._stop_event = Event()
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop_event.is_set()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
 
     def run(self) -> None:
+        parts: list[str] = []
         try:
-            reply = self._client.chat(self._messages, system_prompt=self._system_prompt)
+            for chunk in self._client.chat_stream(
+                self._messages,
+                system_prompt=self._system_prompt,
+                should_stop=self._stop_event.is_set,
+            ):
+                if self._stop_event.is_set():
+                    break
+                parts.append(chunk)
+                self.token_received.emit(chunk)
         except LocalModelError as exc:
-            self.failed.emit(str(exc))
+            partial = "".join(parts)
+            if self._stop_event.is_set():
+                self.stopped.emit(partial)
+            elif partial.strip():
+                self.interrupted.emit(partial, str(exc))
+            else:
+                self.failed.emit(str(exc))
             return
         except Exception as exc:  # defensive UI boundary
-            self.failed.emit(f"Unexpected local model error: {exc}")
+            partial = "".join(parts)
+            error = f"Unexpected local model error: {exc}"
+            if self._stop_event.is_set():
+                self.stopped.emit(partial)
+            elif partial.strip():
+                self.interrupted.emit(partial, error)
+            else:
+                self.failed.emit(error)
             return
-        self.completed.emit(reply)
+
+        reply = "".join(parts)
+        if self._stop_event.is_set():
+            self.stopped.emit(reply)
+        elif reply.strip():
+            self.completed.emit(reply.strip())
+        else:
+            self.failed.emit("Local model returned an empty streaming response")
 
 
 class MediaWorker(QThread):
@@ -207,6 +248,9 @@ class ChatWidget(QWidget):
         self._pending_user_text = ""
         self._latest_user_text = ""
         self._latest_assistant_text = ""
+        self._streaming_started = False
+        self._generation_was_stopped = False
+        self._generation_was_interrupted = False
 
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
@@ -229,12 +273,16 @@ class ChatWidget(QWidget):
         feedback_row.addWidget(self.more_button)
 
         self.send_button = QPushButton("Senden")
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip("Laufende Textantwort abbrechen")
         self.clear_button = QPushButton("Chat leeren")
         self.status = QLabel(f"Modell: {self.model.model}")
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.status, 1)
         button_row.addWidget(self.clear_button)
+        button_row.addWidget(self.stop_button)
         button_row.addWidget(self.send_button)
 
         layout = QVBoxLayout(self)
@@ -245,11 +293,14 @@ class ChatWidget(QWidget):
         layout.addLayout(button_row)
 
         self.send_button.clicked.connect(self.send_current)
+        self.stop_button.clicked.connect(self.stop_current_response)
         self.clear_button.clicked.connect(self.clear_chat)
         self.more_button.clicked.connect(lambda: self._start_learning("positive"))
         self.less_button.clicked.connect(lambda: self._start_learning("negative"))
         self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         self.send_shortcut.activated.connect(self.send_current)
+        self.stop_shortcut = QShortcut(QKeySequence("Escape"), self)
+        self.stop_shortcut.activated.connect(self.stop_current_response)
 
         self._load_history()
 
@@ -285,14 +336,46 @@ class ChatWidget(QWidget):
 
     def _append_message(self, message: ChatMessage) -> None:
         label = "Du" if message.role == "user" else self.persona.name
+        safe_label = label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         safe_text = (
             message.content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         )
         safe_text = safe_text.replace("\n", "<br>")
-        self.transcript.append(f"<b>{label}:</b><br>{safe_text}<br>")
+        self.transcript.append(f"<b>{safe_label}:</b><br>{safe_text}<br>")
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self) -> None:
         self.transcript.verticalScrollBar().setValue(
             self.transcript.verticalScrollBar().maximum()
         )
+
+    def _stream_token(self, token: str) -> None:
+        if not token:
+            return
+        if not self._streaming_started:
+            label = self.persona.name
+            safe_label = (
+                label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            self.transcript.append(f"<b>{safe_label}:</b><br>")
+            self._streaming_started = True
+            self.status.setText("KI antwortet lokal …")
+
+        cursor = self.transcript.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(token)
+        self.transcript.setTextCursor(cursor)
+        self._scroll_to_bottom()
+
+    def _finish_streaming_message(self) -> None:
+        if not self._streaming_started:
+            return
+        cursor = self.transcript.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertBlock()
+        self.transcript.setTextCursor(cursor)
+        self._streaming_started = False
+        self._scroll_to_bottom()
 
     def send_current(self) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -303,6 +386,9 @@ class ChatWidget(QWidget):
             return
 
         self._pending_user_text = text
+        self._streaming_started = False
+        self._generation_was_stopped = False
+        self._generation_was_interrupted = False
         self.more_button.setEnabled(False)
         self.less_button.setEnabled(False)
         self.input.clear()
@@ -323,15 +409,26 @@ class ChatWidget(QWidget):
         self._set_busy(True)
 
         worker = ModelWorker(self.model, messages, system_prompt, self)
+        worker.token_received.connect(self._stream_token)
         worker.completed.connect(self._model_completed)
+        worker.stopped.connect(self._model_stopped)
+        worker.interrupted.connect(self._model_interrupted)
         worker.failed.connect(self._model_failed)
         worker.finished.connect(self._worker_finished)
         self._worker = worker
         worker.start()
 
+    def stop_current_response(self) -> None:
+        worker = self._worker
+        if worker is None or not worker.isRunning() or worker.stop_requested:
+            return
+        worker.request_stop()
+        self.stop_button.setEnabled(False)
+        self.status.setText("Stoppe laufende Antwort …")
+
     def _model_completed(self, reply: str) -> None:
+        self._finish_streaming_message()
         self.store.append_message("assistant", reply)
-        self._append_message(ChatMessage(role="assistant", content=reply))
         self._latest_user_text = self._pending_user_text
         self._latest_assistant_text = reply
         self.more_button.setEnabled(True)
@@ -339,7 +436,32 @@ class ChatWidget(QWidget):
         self._start_media_generation(self._pending_user_text, reply)
         self._maybe_start_memory_learning(self._pending_user_text, reply)
 
+    def _model_stopped(self, partial: str) -> None:
+        clean = partial.strip()
+        self._finish_streaming_message()
+        if clean:
+            self.store.append_message("assistant", clean)
+        self._latest_user_text = ""
+        self._latest_assistant_text = ""
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+        self._generation_was_stopped = True
+        self.status.setText("Antwort gestoppt")
+
+    def _model_interrupted(self, partial: str, error: str) -> None:
+        clean = partial.strip()
+        self._finish_streaming_message()
+        if clean:
+            self.store.append_message("assistant", clean)
+        self._latest_user_text = ""
+        self._latest_assistant_text = ""
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+        self._generation_was_interrupted = True
+        self.status.setText(f"Antwort unterbrochen: {error}")
+
     def _model_failed(self, error: str) -> None:
+        self._finish_streaming_message()
         QMessageBox.warning(
             self,
             "Lokales Modell nicht erreichbar",
@@ -347,14 +469,20 @@ class ChatWidget(QWidget):
         )
 
     def _worker_finished(self) -> None:
-        self._set_busy(False)
         worker = self._worker
         self._worker = None
+        self._set_busy(False)
+        if self._generation_was_stopped:
+            self.status.setText("Antwort gestoppt")
+        elif self._generation_was_interrupted:
+            self.status.setText("Antwort wurde unterbrochen; Teiltext wurde lokal gespeichert")
         if worker is not None:
             worker.deleteLater()
 
     def _set_busy(self, busy: bool) -> None:
         self.send_button.setEnabled(not busy)
+        self.stop_button.setEnabled(busy)
+        self.clear_button.setEnabled(not busy)
         self.input.setEnabled(not busy)
         if busy:
             self.status.setText("KI denkt lokal …")
