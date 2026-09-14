@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -56,6 +57,42 @@ class SettingsWidget(QWidget):
 
         self.model_name = QLineEdit(settings.model_name)
         self.model_url = QLineEdit(settings.model_url)
+
+        self.chat_temperature = QDoubleSpinBox()
+        self.chat_temperature.setRange(0.0, 2.0)
+        self.chat_temperature.setDecimals(2)
+        self.chat_temperature.setSingleStep(0.05)
+        self.chat_temperature.setValue(settings.chat_temperature)
+        self.chat_temperature.setToolTip(
+            "Niedriger = ruhiger/vorhersehbarer, höher = variabler/kreativer."
+        )
+
+        self.chat_history_messages = QSpinBox()
+        self.chat_history_messages.setRange(10, 500)
+        self.chat_history_messages.setSuffix(" Nachrichten")
+        self.chat_history_messages.setValue(settings.chat_history_messages)
+        self.chat_history_messages.setToolTip(
+            "Wie viele der letzten Chat-Nachrichten an das lokale Modell gesendet werden."
+        )
+
+        self.chat_num_ctx = QSpinBox()
+        self.chat_num_ctx.setRange(0, 262144)
+        self.chat_num_ctx.setSingleStep(1024)
+        self.chat_num_ctx.setSpecialValueText("Modellstandard")
+        self.chat_num_ctx.setValue(settings.chat_num_ctx)
+        self.chat_num_ctx.setToolTip(
+            "Optionales Ollama-Kontextfenster. Größere Werte brauchen mehr RAM/VRAM; 0 nutzt den Modellstandard."
+        )
+
+        self.chat_num_predict = QSpinBox()
+        self.chat_num_predict.setRange(0, 32768)
+        self.chat_num_predict.setSingleStep(128)
+        self.chat_num_predict.setSpecialValueText("Modellstandard")
+        self.chat_num_predict.setValue(settings.chat_num_predict)
+        self.chat_num_predict.setToolTip(
+            "Optionales maximales Antwortbudget in Tokens; 0 nutzt den Modellstandard."
+        )
+
         self.media_enabled = QCheckBox("Lokale Mediengenerierung aktivieren")
         self.media_enabled.setChecked(settings.media_enabled)
         self.media_url = QLineEdit(settings.media_url)
@@ -98,6 +135,10 @@ class SettingsWidget(QWidget):
         form = QFormLayout()
         form.addRow("Lokales Sprachmodell", self.model_name)
         form.addRow("Ollama/API-URL", self.model_url)
+        form.addRow("Chat-Temperatur", self.chat_temperature)
+        form.addRow("Chat-Historie", self.chat_history_messages)
+        form.addRow("Ollama-Kontextfenster", self.chat_num_ctx)
+        form.addRow("Antwortlimit", self.chat_num_predict)
         form.addRow("Medien", self.media_enabled)
         form.addRow("ComfyUI-URL", self.media_url)
         form.addRow("API-Workflow", workflow_row)
@@ -171,6 +212,10 @@ class SettingsWidget(QWidget):
         return AppSettings(
             model_name=self.model_name.text(),
             model_url=self.model_url.text(),
+            chat_temperature=self.chat_temperature.value(),
+            chat_history_messages=self.chat_history_messages.value(),
+            chat_num_ctx=self.chat_num_ctx.value(),
+            chat_num_predict=self.chat_num_predict.value(),
             media_enabled=self.media_enabled.isChecked(),
             media_url=self.media_url.text(),
             media_workflow=self.media_workflow.text(),
