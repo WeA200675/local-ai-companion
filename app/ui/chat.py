@@ -261,6 +261,9 @@ class ChatWidget(QWidget):
         self._streaming_started = False
         self._generation_was_stopped = False
         self._generation_was_interrupted = False
+        self._generation_mode = "new"
+        self._continuation_prefix = ""
+        self._last_response_incomplete = False
 
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
@@ -282,6 +285,17 @@ class ChatWidget(QWidget):
         feedback_row.addWidget(self.less_button)
         feedback_row.addWidget(self.more_button)
 
+        self.regenerate_button = QPushButton("↻ Neu generieren")
+        self.regenerate_button.setToolTip("Letzte Antwort verwerfen und neu erzeugen")
+        self.continue_button = QPushButton("▶ Fortsetzen")
+        self.continue_button.setToolTip("Eine gestoppte oder unterbrochene Antwort fortsetzen")
+        self.continue_button.setEnabled(False)
+
+        message_action_row = QHBoxLayout()
+        message_action_row.addStretch(1)
+        message_action_row.addWidget(self.continue_button)
+        message_action_row.addWidget(self.regenerate_button)
+
         self.send_button = QPushButton("Senden")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
@@ -299,12 +313,15 @@ class ChatWidget(QWidget):
         layout.addWidget(self.transcript, 1)
         layout.addWidget(self.media_preview)
         layout.addLayout(feedback_row)
+        layout.addLayout(message_action_row)
         layout.addWidget(self.input)
         layout.addLayout(button_row)
 
         self.send_button.clicked.connect(self.send_current)
         self.stop_button.clicked.connect(self.stop_current_response)
         self.clear_button.clicked.connect(self.clear_chat)
+        self.regenerate_button.clicked.connect(self.regenerate_last_response)
+        self.continue_button.clicked.connect(self.continue_last_response)
         self.more_button.clicked.connect(lambda: self._start_learning("positive"))
         self.less_button.clicked.connect(lambda: self._start_learning("negative"))
         self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -343,6 +360,16 @@ class ChatWidget(QWidget):
         self.transcript.clear()
         for message in self.store.list_messages():
             self._append_message(message)
+        self._refresh_message_actions()
+
+    def _refresh_message_actions(self) -> None:
+        text_busy = self._worker is not None and self._worker.isRunning()
+        latest_user = self.store.latest_user_message()
+        exchange = self.store.latest_exchange()
+        self.regenerate_button.setEnabled(not text_busy and latest_user is not None)
+        self.continue_button.setEnabled(
+            not text_busy and self._last_response_incomplete and exchange is not None
+        )
 
     def _append_message(self, message: ChatMessage) -> None:
         label = "Du" if message.role == "user" else self.persona.name
@@ -364,6 +391,8 @@ class ChatWidget(QWidget):
             return
         if not self._streaming_started:
             label = self.persona.name
+            if self._generation_mode == "continue":
+                label = f"{label} (Fortsetzung)"
             safe_label = (
                 label.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             )
@@ -387,41 +416,38 @@ class ChatWidget(QWidget):
         self._streaming_started = False
         self._scroll_to_bottom()
 
-    def send_current(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return
+    @staticmethod
+    def _join_continuation(prefix: str, continuation: str) -> str:
+        left = prefix.rstrip()
+        right = continuation.lstrip()
+        if not left:
+            return right
+        if not right:
+            return left
+        if continuation[:1].isspace() or prefix[-1:].isspace():
+            return prefix + continuation
+        if right[0] in ".,!?;:)]}" or left[-1] in "([{/—–-":
+            return left + right
+        return f"{left} {right}"
 
-        text = self.input.toPlainText().strip()
-        if not text:
-            return
-
-        self._pending_user_text = text
-        self._streaming_started = False
-        self._generation_was_stopped = False
-        self._generation_was_interrupted = False
-        self.more_button.setEnabled(False)
-        self.less_button.setEnabled(False)
-        self.input.clear()
-        self.store.append_message("user", text)
-        self._append_message(ChatMessage(role="user", content=text))
-
-        messages = self.store.list_messages(limit=self.settings.chat_history_messages)
+    def _system_prompt(self) -> str:
         memory_notes = (
             self.store.list_active_memory_summaries(limit=12)
             if self.settings.adaptive_memory_enabled
             else []
         )
-        system_prompt = build_system_prompt(
+        return build_system_prompt(
             self.persona,
             self.preference_tags,
             memory_notes,
         )
-        self._set_busy(True)
 
+    def _start_text_worker(self, messages: list[ChatMessage]) -> None:
+        self._set_busy(True)
         worker = ModelWorker(
             self.model,
             messages,
-            system_prompt,
+            self._system_prompt(),
             temperature=self.settings.chat_temperature,
             num_ctx=self.settings.chat_num_ctx or None,
             num_predict=self.settings.chat_num_predict or None,
@@ -436,6 +462,96 @@ class ChatWidget(QWidget):
         self._worker = worker
         worker.start()
 
+    def send_current(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+
+        text = self.input.toPlainText().strip()
+        if not text:
+            return
+
+        self._pending_user_text = text
+        self._streaming_started = False
+        self._generation_was_stopped = False
+        self._generation_was_interrupted = False
+        self._generation_mode = "new"
+        self._continuation_prefix = ""
+        self._last_response_incomplete = False
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+        self.input.clear()
+        self.store.append_message("user", text)
+        self._append_message(ChatMessage(role="user", content=text))
+
+        messages = self.store.list_messages(limit=self.settings.chat_history_messages)
+        self._start_text_worker(messages)
+
+    def regenerate_last_response(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if self._background_worker_running():
+            self.status.setText("Warte kurz, bis der lokale Hintergrundjob fertig ist …")
+            return
+
+        user_text = self.store.latest_user_message()
+        if not user_text:
+            return
+
+        self.store.delete_last_assistant_message()
+        self._load_history()
+        self._pending_user_text = user_text
+        self._streaming_started = False
+        self._generation_was_stopped = False
+        self._generation_was_interrupted = False
+        self._generation_mode = "regenerate"
+        self._continuation_prefix = ""
+        self._last_response_incomplete = False
+        self._latest_user_text = ""
+        self._latest_assistant_text = ""
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+
+        messages = self.store.list_messages(limit=self.settings.chat_history_messages)
+        self.status.setText("Generiere letzte Antwort neu …")
+        self._start_text_worker(messages)
+
+    def continue_last_response(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if self._background_worker_running():
+            self.status.setText("Warte kurz, bis der lokale Hintergrundjob fertig ist …")
+            return
+        if not self._last_response_incomplete:
+            return
+
+        exchange = self.store.latest_exchange()
+        if exchange is None:
+            return
+        user_text, partial = exchange
+
+        self._pending_user_text = user_text
+        self._continuation_prefix = partial
+        self._streaming_started = False
+        self._generation_was_stopped = False
+        self._generation_was_interrupted = False
+        self._generation_mode = "continue"
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+
+        messages = self.store.list_messages(limit=self.settings.chat_history_messages)
+        messages.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    "Continue the immediately preceding assistant reply exactly from where it stopped. "
+                    "Do not repeat or summarize text already written. Keep the same language, tone, "
+                    "persona, and scene continuity. Return only the continuation."
+                ),
+            )
+        )
+        self.status.setText("Setze gestoppte Antwort fort …")
+        self._start_text_worker(messages)
+
     def stop_current_response(self) -> None:
         worker = self._worker
         if worker is None or not worker.isRunning() or worker.stop_requested:
@@ -446,37 +562,66 @@ class ChatWidget(QWidget):
 
     def _model_completed(self, reply: str) -> None:
         self._finish_streaming_message()
-        self.store.append_message("assistant", reply)
+        if self._generation_mode == "continue":
+            final_reply = self._join_continuation(self._continuation_prefix, reply)
+            self.store.replace_last_assistant_message(final_reply)
+        else:
+            final_reply = reply
+            self.store.append_message("assistant", final_reply)
+
         self._latest_user_text = self._pending_user_text
-        self._latest_assistant_text = reply
+        self._latest_assistant_text = final_reply
+        self._last_response_incomplete = False
+        self._continuation_prefix = ""
         self.more_button.setEnabled(True)
         self.less_button.setEnabled(True)
-        self._start_media_generation(self._pending_user_text, reply)
-        self._maybe_start_memory_learning(self._pending_user_text, reply)
+        self._refresh_message_actions()
+        self._start_media_generation(self._pending_user_text, final_reply)
+        self._maybe_start_memory_learning(self._pending_user_text, final_reply)
 
     def _model_stopped(self, partial: str) -> None:
         clean = partial.strip()
         self._finish_streaming_message()
-        if clean:
-            self.store.append_message("assistant", clean)
+        if self._generation_mode == "continue":
+            if clean:
+                combined = self._join_continuation(self._continuation_prefix, partial)
+                self.store.replace_last_assistant_message(combined)
+                self._continuation_prefix = combined
+            self._last_response_incomplete = bool(self.store.latest_exchange())
+        else:
+            if clean:
+                self.store.append_message("assistant", clean)
+            self._last_response_incomplete = bool(clean)
+
         self._latest_user_text = ""
         self._latest_assistant_text = ""
         self.more_button.setEnabled(False)
         self.less_button.setEnabled(False)
         self._generation_was_stopped = True
         self.status.setText("Antwort gestoppt")
+        self._refresh_message_actions()
 
     def _model_interrupted(self, partial: str, error: str) -> None:
         clean = partial.strip()
         self._finish_streaming_message()
-        if clean:
-            self.store.append_message("assistant", clean)
+        if self._generation_mode == "continue":
+            if clean:
+                combined = self._join_continuation(self._continuation_prefix, partial)
+                self.store.replace_last_assistant_message(combined)
+                self._continuation_prefix = combined
+            self._last_response_incomplete = bool(self.store.latest_exchange())
+        else:
+            if clean:
+                self.store.append_message("assistant", clean)
+            self._last_response_incomplete = bool(clean)
+
         self._latest_user_text = ""
         self._latest_assistant_text = ""
         self.more_button.setEnabled(False)
         self.less_button.setEnabled(False)
         self._generation_was_interrupted = True
         self.status.setText(f"Antwort unterbrochen: {error}")
+        self._refresh_message_actions()
 
     def _model_failed(self, error: str) -> None:
         self._finish_streaming_message()
@@ -491,9 +636,10 @@ class ChatWidget(QWidget):
         self._worker = None
         self._set_busy(False)
         if self._generation_was_stopped:
-            self.status.setText("Antwort gestoppt")
+            self.status.setText("Antwort gestoppt — Fortsetzen ist verfügbar")
         elif self._generation_was_interrupted:
             self.status.setText("Antwort wurde unterbrochen; Teiltext wurde lokal gespeichert")
+        self._refresh_message_actions()
         if worker is not None:
             worker.deleteLater()
 
@@ -503,9 +649,13 @@ class ChatWidget(QWidget):
         self.clear_button.setEnabled(not busy)
         self.input.setEnabled(not busy)
         if busy:
+            self.regenerate_button.setEnabled(False)
+            self.continue_button.setEnabled(False)
             self.status.setText("KI denkt lokal …")
-        elif not self._background_worker_running():
-            self.status.setText(f"Modell: {self.model.model}")
+        else:
+            self._refresh_message_actions()
+            if not self._background_worker_running():
+                self.status.setText(f"Modell: {self.model.model}")
 
     def _background_worker_running(self) -> bool:
         workers = (self._media_worker, self._learning_worker, self._memory_worker)
@@ -667,5 +817,8 @@ class ChatWidget(QWidget):
             self.transcript.clear()
             self._latest_user_text = ""
             self._latest_assistant_text = ""
+            self._continuation_prefix = ""
+            self._last_response_incomplete = False
             self.more_button.setEnabled(False)
             self.less_button.setEnabled(False)
+            self._refresh_message_actions()
