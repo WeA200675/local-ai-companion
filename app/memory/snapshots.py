@@ -52,6 +52,13 @@ class SnapshotStore:
             raise KeyError(f"Snapshot {snapshot_id} not found")
         return snapshot
 
+    def list_recent(self, limit: int = 100) -> list[Snapshot]:
+        return list(
+            self.session.scalars(
+                select(Snapshot).order_by(Snapshot.id.desc()).limit(limit)
+            ).all()
+        )
+
     def load_state(self, snapshot_id: int) -> PersonaState:
         snapshot = self.get(snapshot_id)
         return PersonaState.model_validate(json.loads(snapshot.persona_json))
