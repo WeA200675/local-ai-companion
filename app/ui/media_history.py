@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -21,6 +21,8 @@ from app.ui.media_preview import MediaPreview
 class MediaHistoryWidget(QWidget):
     """Local history and feedback UI for generated media."""
 
+    feedback_changed = Signal()
+
     def __init__(
         self,
         store: StateStore,
@@ -37,6 +39,10 @@ class MediaHistoryWidget(QWidget):
         self.preview = MediaPreview()
         self.meta = QLabel("Noch kein Medium ausgewählt")
         self.meta.setWordWrap(True)
+        self.feedback_note = QLabel(
+            "Bildbewertungen fließen als lokale, nachvollziehbare Stilpräferenzen in spätere Medienplanung ein."
+        )
+        self.feedback_note.setWordWrap(True)
 
         splitter = QSplitter()
         splitter.addWidget(self.list_widget)
@@ -62,6 +68,7 @@ class MediaHistoryWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addWidget(splitter, 1)
+        layout.addWidget(self.feedback_note)
         layout.addLayout(row)
 
         self.list_widget.currentItemChanged.connect(self._selection_changed)
@@ -135,3 +142,4 @@ class MediaHistoryWidget(QWidget):
             return
         self.store.set_media_feedback(media_id, feedback)
         self.refresh()
+        self.feedback_changed.emit()
