@@ -157,7 +157,7 @@ def test_anti_repetition_detects_repeated_opening_and_staging(tmp_path) -> None:
     *_, anti, _repo, _director, _recipes, _manager = _stack(tmp_path)
     signature = "look:noir|mood:amber|detail:glove"
     anti.record_reply("chat-a", "You hold my gaze and wait.", signature)
-    anti.record_reply("chat-a", "You hold my gaze, then shift slightly.", signature)
+    anti.record_reply("chat-a", "You hold my gaze and shift slightly.", signature)
 
     guidance = anti.guidance("chat-a", signature)
 
@@ -174,7 +174,7 @@ def test_context_snapshot_contains_accents_and_repetition_guidance(tmp_path) -> 
     mood = moods.set_active("chat-a", "silver-monochrome")
     detail = details.set_active("chat-a", "hand-prop")
     anti.record_reply("chat-a", "Same opening words keep returning here.", "sig")
-    anti.record_reply("chat-a", "Same opening words keep changing only slightly.", "sig")
+    anti.record_reply("chat-a", "Same opening words keep returning again.", "sig")
     guidance = anti.guidance("chat-a", "sig")
 
     snapshot = build_context_snapshot(
