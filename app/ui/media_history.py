@@ -21,7 +21,7 @@ _IMAGE_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 class MediaHistoryWidget(QWidget):
-    """Local history, feedback, and explicit character-reference UI."""
+    """Local history, feedback, workflow trace, and character-reference UI."""
 
     feedback_changed = Signal()
     reference_changed = Signal()
@@ -164,17 +164,20 @@ class MediaHistoryWidget(QWidget):
             return
         intent = event.get("intent") or {}
         description = ""
+        workflow_profile = "standard"
         if isinstance(intent, dict):
             description = " · ".join(
                 str(intent.get(key, "")).strip()
                 for key in ("mood", "theme", "visual_style")
                 if str(intent.get(key, "")).strip()
             )
+            workflow_profile = str(intent.get("workflow_profile") or "standard")
         self.preview.show_media(str(event["path"]), description=description)
         continuity_key = str(event.get("continuity_key") or "")
         is_reference = self._reference_ids.get(continuity_key) == media_id
         self.meta.setText(
             f"ID #{media_id} · Seed {event['seed']} · "
+            f"Workflow {workflow_profile} · "
             f"Continuity {continuity_key or 'aus'} · "
             f"Bewertung {event.get('feedback') or 'keine'} · "
             f"Referenz {'fest' if is_reference else 'nein'}"
