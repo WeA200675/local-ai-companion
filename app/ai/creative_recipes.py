@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.ai.creative_accents import DetailAccentRepository, MoodGradeRepository
 from app.ai.look_presets import LookPresetRepository
 from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.session_arcs import SessionArcRepository
@@ -26,6 +27,8 @@ class CreativeRecipe(BaseModel):
     variety_id: str | None = None
     arc_id: str | None = None
     visual_motif_id: str | None = None
+    mood_grade_id: str | None = None
+    detail_accent_id: str | None = None
     scene_mix: SceneMix | None = None
     draw_scene_mix: bool = False
     builtin: bool = False
@@ -52,6 +55,8 @@ def default_creative_recipes() -> list[CreativeRecipe]:
             variety_id="confident-presence",
             arc_id="tension-curve",
             visual_motif_id="steady-gaze",
+            mood_grade_id="amber-noir",
+            detail_accent_id="glove-buckle",
             draw_scene_mix=True,
             builtin=True,
         ),
@@ -63,6 +68,8 @@ def default_creative_recipes() -> list[CreativeRecipe]:
             variety_id="playful-spark",
             arc_id="playful-pulse",
             visual_motif_id="playful-lean",
+            mood_grade_id="editorial-punch",
+            detail_accent_id="metal-accent",
             draw_scene_mix=True,
             builtin=True,
         ),
@@ -74,6 +81,8 @@ def default_creative_recipes() -> list[CreativeRecipe]:
             variety_id="mystery-beat",
             arc_id="mystery-night",
             visual_motif_id="rain-silhouette",
+            mood_grade_id="neon-night",
+            detail_accent_id="rain-glass",
             draw_scene_mix=True,
             builtin=True,
         ),
@@ -85,6 +94,8 @@ def default_creative_recipes() -> list[CreativeRecipe]:
             variety_id="visual-frame",
             arc_id="cinematic-sequence",
             visual_motif_id="material-detail",
+            mood_grade_id="silver-monochrome",
+            detail_accent_id="hand-prop",
             draw_scene_mix=True,
             builtin=True,
         ),
@@ -193,6 +204,8 @@ class CreativeRecipeManager:
         arcs: SessionArcRepository,
         mixer: SceneMixerRepository,
         motifs: VisualMotifRepository,
+        moods: MoodGradeRepository | None = None,
+        details: DetailAccentRepository | None = None,
     ) -> None:
         self.repository = repository
         self.looks = looks
@@ -200,6 +213,8 @@ class CreativeRecipeManager:
         self.arcs = arcs
         self.mixer = mixer
         self.motifs = motifs
+        self.moods = moods
+        self.details = details
 
     def capture_current(self, conversation_id: str, *, name: str) -> CreativeRecipe:
         clean_name = " ".join(name.split())
@@ -209,6 +224,8 @@ class CreativeRecipeManager:
         variety = self.variety.active(conversation_id)
         arc = self.arcs.active(conversation_id)
         motif = self.motifs.active(conversation_id)
+        mood = self.moods.active(conversation_id) if self.moods is not None else None
+        detail = self.details.active(conversation_id) if self.details is not None else None
         mix = self.mixer.active(conversation_id)
         return self.repository.create_custom(
             name=clean_name,
@@ -217,6 +234,8 @@ class CreativeRecipeManager:
             variety_id=variety.id if variety else None,
             arc_id=arc.arc_id if arc else None,
             visual_motif_id=motif.id if motif else None,
+            mood_grade_id=mood.id if mood else None,
+            detail_accent_id=detail.id if detail else None,
             scene_mix=mix.model_copy(deep=True) if mix else None,
             draw_scene_mix=False,
         )
@@ -244,6 +263,10 @@ class CreativeRecipeManager:
         else:
             self.arcs.clear(conversation_id)
         self.motifs.set_active(conversation_id, recipe.visual_motif_id)
+        if self.moods is not None:
+            self.moods.set_active(conversation_id, recipe.mood_grade_id)
+        if self.details is not None:
+            self.details.set_active(conversation_id, recipe.detail_accent_id)
 
         if recipe.scene_mix is not None:
             self._restore_scene_mix(conversation_id, recipe.scene_mix)

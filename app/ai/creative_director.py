@@ -5,6 +5,12 @@ from typing import Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
+from app.ai.creative_accents import (
+    DetailAccent,
+    DetailAccentRepository,
+    MoodGrade,
+    MoodGradeRepository,
+)
 from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.session_arcs import ActiveArc, SessionArcRepository
@@ -27,6 +33,8 @@ class CreativeDirectorConfig(BaseModel):
     lock_arc: bool = False
     lock_scene_mix: bool = False
     lock_visual_motif: bool = False
+    lock_mood_grade: bool = False
+    lock_detail_accent: bool = False
     favorite_look_ids: list[str] = Field(default_factory=list)
     favorite_arc_ids: list[str] = Field(default_factory=list)
     favorite_visual_motif_ids: list[str] = Field(default_factory=list)
@@ -45,6 +53,8 @@ class CreativeDirectorResult(BaseModel):
     arc: ActiveArc | None = None
     scene_mix: SceneMix | None = None
     visual_motif: VisualMotif | None = None
+    mood_grade: MoodGrade | None = None
+    detail_accent: DetailAccent | None = None
 
     @property
     def changed_anything(self) -> bool:
@@ -135,6 +145,8 @@ class CreativeDirector:
         mixer: SceneMixerRepository,
         variety: VarietyRepository,
         motifs: VisualMotifRepository | None = None,
+        moods: MoodGradeRepository | None = None,
+        details: DetailAccentRepository | None = None,
     ) -> None:
         self.repository = repository
         self.looks = looks
@@ -142,6 +154,8 @@ class CreativeDirector:
         self.mixer = mixer
         self.variety = variety
         self.motifs = motifs
+        self.moods = moods
+        self.details = details
 
     @staticmethod
     def _choose(items: list[T], rng: random.Random | random.SystemRandom) -> T:
@@ -209,7 +223,7 @@ class CreativeDirector:
 
     @staticmethod
     def _layer_count(intensity: DirectorIntensity, available: int) -> int:
-        requested = {"gentle": 1, "balanced": 2, "wild": 5}[intensity]
+        requested = {"gentle": 1, "balanced": 3, "wild": 7}[intensity]
         return min(max(0, available), requested)
 
     def apply(
@@ -233,6 +247,10 @@ class CreativeDirector:
             available.append("scene_mix")
         if self.motifs is not None and not config.lock_visual_motif:
             available.append("visual_motif")
+        if self.moods is not None and not config.lock_mood_grade:
+            available.append("mood_grade")
+        if self.details is not None and not config.lock_detail_accent:
+            available.append("detail_accent")
 
         if automatic:
             count = self._layer_count(config.intensity, len(available))
@@ -262,6 +280,12 @@ class CreativeDirector:
                 result.changed.append(layer)
             elif layer == "visual_motif":
                 result.visual_motif = self._draw_visual_motif(conversation_id, config, chooser)
+                result.changed.append(layer)
+            elif layer == "mood_grade" and self.moods is not None:
+                result.mood_grade = self.moods.draw(conversation_id, rng=chooser)
+                result.changed.append(layer)
+            elif layer == "detail_accent" and self.details is not None:
+                result.detail_accent = self.details.draw(conversation_id, rng=chooser)
                 result.changed.append(layer)
 
         if automatic and assistant_count is not None:

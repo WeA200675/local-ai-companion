@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
+from app.ai.anti_repetition import AntiRepetitionRepository
+from app.ai.creative_accents import DetailAccentRepository, MoodGradeRepository
 from app.ai.creative_director import CreativeDirector, CreativeDirectorRepository
 from app.ai.creative_recipes import CreativeRecipeManager, CreativeRecipeRepository
 from app.ai.look_presets import LookPresetRepository
@@ -34,6 +36,7 @@ from app.ui.backup import BackupWidget
 from app.ui.character_studio import CharacterStudio
 from app.ui.context_inspector import ContextInspectorWidget
 from app.ui.conversations import ConversationsWidget
+from app.ui.creative_accents import CreativeAccentsPanel
 from app.ui.creative_variety import CreativeVarietyWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
@@ -69,6 +72,9 @@ class MainWindow(QMainWindow):
         self.arc_repository = SessionArcRepository(self.store)
         self.mixer_repository = SceneMixerRepository(self.store)
         self.motif_repository = VisualMotifRepository(self.store)
+        self.mood_repository = MoodGradeRepository(self.store)
+        self.detail_repository = DetailAccentRepository(self.store)
+        self.anti_repetition_repository = AntiRepetitionRepository(self.store)
         self.director_repository = CreativeDirectorRepository(self.store)
         self.creative_director = CreativeDirector(
             self.director_repository,
@@ -77,6 +83,8 @@ class MainWindow(QMainWindow):
             self.mixer_repository,
             self.variety_repository,
             self.motif_repository,
+            self.mood_repository,
+            self.detail_repository,
         )
         self.recipe_repository = CreativeRecipeRepository(self.store)
         self.recipe_manager = CreativeRecipeManager(
@@ -86,6 +94,8 @@ class MainWindow(QMainWindow):
             self.arc_repository,
             self.mixer_repository,
             self.motif_repository,
+            self.mood_repository,
+            self.detail_repository,
         )
 
         self.model, self.media_service = self._build_services(self.settings)
@@ -114,6 +124,11 @@ class MainWindow(QMainWindow):
             scene_mix=self.mixer_repository.active(active_conversation_id),
             motif_repository=self.motif_repository,
             visual_motif=self.motif_repository.active(active_conversation_id),
+            mood_repository=self.mood_repository,
+            mood_grade=self.mood_repository.active(active_conversation_id),
+            detail_repository=self.detail_repository,
+            detail_accent=self.detail_repository.active(active_conversation_id),
+            anti_repetition_repository=self.anti_repetition_repository,
             creative_director=self.creative_director,
         )
         self.conversations_widget = ConversationsWidget(
@@ -132,6 +147,12 @@ class MainWindow(QMainWindow):
             self.creative_director,
             self.director_repository,
             self.recipe_manager,
+            active_conversation_id,
+        )
+        self.creative_accents = CreativeAccentsPanel(
+            self.mood_repository,
+            self.detail_repository,
+            self.anti_repetition_repository,
             active_conversation_id,
         )
         self.context_inspector = ContextInspectorWidget(self.store, self.chat)
@@ -187,6 +208,15 @@ class MainWindow(QMainWindow):
         self.creative_variety.visual_motif_changed.connect(
             lambda _motif: self.context_inspector.refresh()
         )
+        self.creative_accents.mood_changed.connect(self.chat.set_mood_grade)
+        self.creative_accents.mood_changed.connect(
+            lambda _mood: self.context_inspector.refresh()
+        )
+        self.creative_accents.detail_changed.connect(self.chat.set_detail_accent)
+        self.creative_accents.detail_changed.connect(
+            lambda _detail: self.context_inspector.refresh()
+        )
+        self.creative_accents.anti_repetition_changed.connect(self.context_inspector.refresh)
         self.creative_variety.director_applied.connect(self._creative_director_applied)
         self.creative_variety.recipe_applied.connect(self._creative_director_applied)
         self.chat.creative_context_changed.connect(self._creative_director_auto_changed)
@@ -207,6 +237,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.conversations_widget, "Unterhaltungen")
         self.tabs.addTab(self.variety_widget, "Impulse")
         self.tabs.addTab(self.creative_variety, "Abwechslung")
+        self.tabs.addTab(self.creative_accents, "Mood & Details")
         self.tabs.addTab(self.context_inspector, "Kontext")
         self.tabs.addTab(self.session_modes, "Session-Modi")
         self.tabs.addTab(self.scene_presets, "Szenen")
@@ -350,12 +381,14 @@ class MainWindow(QMainWindow):
         conversation_id = self.conversations_repository.active_id()
         self.chat.refresh_creative_overlays()
         self.variety_widget.set_conversation(conversation_id)
+        self.creative_accents.refresh_from_repositories()
         self.context_inspector.refresh()
 
     def _creative_director_auto_changed(self) -> None:
         conversation_id = self.conversations_repository.active_id()
         self.variety_widget.set_conversation(conversation_id)
         self.creative_variety.refresh_from_repositories()
+        self.creative_accents.refresh_from_repositories()
         self.context_inspector.refresh()
 
     def _conversation_changed(self, conversation_id: str) -> None:
@@ -366,6 +399,7 @@ class MainWindow(QMainWindow):
             return
         self.variety_widget.set_conversation(conversation_id)
         self.creative_variety.set_conversation(conversation_id)
+        self.creative_accents.set_conversation(conversation_id)
         self.context_inspector.refresh()
 
     def _persona_changed(self, persona: PersonaState) -> None:

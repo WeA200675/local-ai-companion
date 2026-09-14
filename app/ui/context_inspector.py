@@ -77,6 +77,8 @@ class ContextInspectorWidget(QWidget):
         director_config = None
         scene_locks: list[str] = []
         conversation_id = None
+        anti_repetition_enabled = False
+        anti_repetition_context = ""
         if self.chat.conversations is not None:
             conversation_id = self.chat.conversations.active_id()
         if conversation_id and self.chat.creative_director is not None:
@@ -84,6 +86,13 @@ class ContextInspectorWidget(QWidget):
         if conversation_id and self.chat.mixer_repository is not None:
             scene_locks = sorted(
                 self.chat.mixer_repository.locked_dimensions(conversation_id)
+            )
+        if conversation_id and self.chat.anti_repetition_repository is not None:
+            anti_config = self.chat.anti_repetition_repository.config(conversation_id)
+            anti_repetition_enabled = anti_config.enabled
+            anti_repetition_context = self.chat.anti_repetition_repository.guidance(
+                conversation_id,
+                self.chat._creative_signature(),  # noqa: SLF001 - inspector mirrors chat context
             )
 
         snapshot = build_context_snapshot(
@@ -98,6 +107,10 @@ class ContextInspectorWidget(QWidget):
             active_arc=self.chat.active_arc,
             scene_mix=self.chat.scene_mix,
             visual_motif=self.chat.visual_motif,
+            mood_grade=self.chat.mood_grade,
+            detail_accent=self.chat.detail_accent,
+            anti_repetition_context=anti_repetition_context,
+            anti_repetition_enabled=anti_repetition_enabled,
             conversations=self.chat.conversations,
             director_config=director_config,
             scene_mix_locks=scene_locks,
@@ -126,6 +139,9 @@ class ContextInspectorWidget(QWidget):
                 f"an · alle {snapshot.director_interval} Antworten · "
                 f"{snapshot.director_intensity}"
             )
+        anti = "an" if snapshot.anti_repetition_enabled else "aus"
+        if snapshot.anti_repetition_enabled and snapshot.anti_repetition_context:
+            anti += " · Hinweis aktiv"
 
         lines = [
             f"Modell: {snapshot.model_name}",
@@ -142,8 +158,11 @@ class ContextInspectorWidget(QWidget):
             f"Session-Arc: {snapshot.arc_name or 'aus'}"
             + (f" · {snapshot.arc_stage}" if snapshot.arc_stage else ""),
             f"Visual-Motiv: {snapshot.visual_motif_name or 'Basis'}",
+            f"Mood-Grade: {snapshot.mood_grade_name or 'Basis'}",
+            f"Detail-Akzent: {snapshot.detail_accent_name or 'aus'}",
             f"Scene Mixer: {snapshot.scene_mix_name or 'aus'}",
             f"Kreative Regie: {director}",
+            f"Anti-Wiederholung: {anti}",
             f"Regie-Sperren: {', '.join(snapshot.director_locks) or 'keine'}",
             f"Scene-Mixer-Sperren: {', '.join(snapshot.scene_mix_locks) or 'keine'}",
             f"Aktive Stil-/Präferenz-Tags: {', '.join(snapshot.effective_tags) or 'keine'}",
@@ -177,8 +196,16 @@ class ContextInspectorWidget(QWidget):
             lines.extend(["", "Aktuelle Arc-Phase:", f"  {snapshot.arc_context}"])
         if snapshot.visual_motif_context:
             lines.extend(["", "Aktuelles Visual-Motiv:", f"  {snapshot.visual_motif_context}"])
+        if snapshot.mood_grade_context:
+            lines.extend(["", "Aktuelles Mood-Grade:", f"  {snapshot.mood_grade_context}"])
+        if snapshot.detail_accent_context:
+            lines.extend(["", "Aktueller Detail-Akzent:", f"  {snapshot.detail_accent_context}"])
         if snapshot.scene_mix_context:
             lines.extend(["", "Scene-Mixer-Layer:", f"  {snapshot.scene_mix_context}"])
+        if snapshot.anti_repetition_context:
+            lines.extend(
+                ["", "Lokaler Anti-Wiederholungs-Hinweis:", f"  {snapshot.anti_repetition_context}"]
+            )
         if snapshot.warnings:
             lines.extend(["", "Hinweise:", *[f"  ⚠ {item}" for item in snapshot.warnings]])
 

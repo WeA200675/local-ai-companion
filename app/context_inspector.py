@@ -4,6 +4,7 @@ from math import ceil
 
 from pydantic import BaseModel, Field
 
+from app.ai.creative_accents import DetailAccent, MoodGrade
 from app.ai.creative_director import CreativeDirectorConfig
 from app.ai.look_presets import LookPreset
 from app.ai.persona import PersonaState
@@ -49,6 +50,12 @@ class ContextSnapshot(BaseModel):
     scene_mix_context: str = ""
     visual_motif_name: str | None = None
     visual_motif_context: str = ""
+    mood_grade_name: str | None = None
+    mood_grade_context: str = ""
+    detail_accent_name: str | None = None
+    detail_accent_context: str = ""
+    anti_repetition_enabled: bool = False
+    anti_repetition_context: str = ""
     director_enabled: bool = False
     director_interval: int | None = None
     director_intensity: str | None = None
@@ -98,6 +105,10 @@ def build_context_snapshot(
     active_arc: ActiveArc | None = None,
     scene_mix: SceneMix | None = None,
     visual_motif: VisualMotif | None = None,
+    mood_grade: MoodGrade | None = None,
+    detail_accent: DetailAccent | None = None,
+    anti_repetition_context: str = "",
+    anti_repetition_enabled: bool = False,
     conversations: ConversationRepository | None = None,
     director_config: CreativeDirectorConfig | None = None,
     scene_mix_locks: list[str] | None = None,
@@ -126,6 +137,10 @@ def build_context_snapshot(
         tags.extend(scene_mix.style_tags)
     if visual_motif is not None:
         tags.extend(visual_motif.prompt_tags())
+    if mood_grade is not None:
+        tags.extend(mood_grade.style_tags)
+    if detail_accent is not None:
+        tags.extend(detail_accent.style_tags)
     effective_tags = _dedupe_tags(tags)
 
     scene_context = ""
@@ -140,6 +155,8 @@ def build_context_snapshot(
     arc_context = active_arc.prompt_text() if active_arc is not None else ""
     scene_mix_context = scene_mix.prompt_text() if scene_mix is not None else ""
     visual_motif_context = visual_motif.prompt_text() if visual_motif is not None else ""
+    mood_grade_context = mood_grade.prompt_text() if mood_grade is not None else ""
+    detail_accent_context = detail_accent.prompt_text() if detail_accent is not None else ""
 
     core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
     adaptive_memory = (
@@ -158,6 +175,10 @@ def build_context_snapshot(
         look_context,
         arc_context,
         scene_mix_context,
+        visual_motif_context,
+        mood_grade_context,
+        detail_accent_context,
+        anti_repetition_context,
     )
 
     conversation_id: str | None = None
@@ -227,6 +248,8 @@ def build_context_snapshot(
                 ("arc", director_config.lock_arc),
                 ("scene_mix", director_config.lock_scene_mix),
                 ("visual_motif", director_config.lock_visual_motif),
+                ("mood_grade", director_config.lock_mood_grade),
+                ("detail_accent", director_config.lock_detail_accent),
             )
             if locked
         ]
@@ -254,6 +277,12 @@ def build_context_snapshot(
         scene_mix_context=scene_mix_context,
         visual_motif_name=visual_motif.name if visual_motif is not None else None,
         visual_motif_context=visual_motif_context,
+        mood_grade_name=mood_grade.name if mood_grade is not None else None,
+        mood_grade_context=mood_grade_context,
+        detail_accent_name=detail_accent.name if detail_accent is not None else None,
+        detail_accent_context=detail_accent_context,
+        anti_repetition_enabled=anti_repetition_enabled,
+        anti_repetition_context=anti_repetition_context,
         director_enabled=bool(director_config and director_config.enabled),
         director_interval=director_config.interval if director_config is not None else None,
         director_intensity=director_config.intensity if director_config is not None else None,

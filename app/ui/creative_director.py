@@ -40,9 +40,9 @@ class CreativeDirectorWidget(QWidget):
         self.conversation_id = conversation_id
 
         intro = QLabel(
-            "Die kreative Regie kann temporäre Looks, Impulse, Session-Arcs, Scene-Mixer-Layer "
-            "und visuelle Motive selbstständig variieren. Sie ist standardmäßig aus, verändert weder "
-            "Persona noch Memory und respektiert alle Sperren."
+            "Die kreative Regie kann temporäre Looks, Impulse, Session-Arcs, Scene-Mixer-Layer, "
+            "visuelle Motive, Mood-Grades und Detail-Akzente selbstständig variieren. Sie ist standardmäßig "
+            "aus, verändert weder Persona noch Memory und respektiert alle Sperren."
         )
         intro.setWordWrap(True)
 
@@ -52,8 +52,8 @@ class CreativeDirectorWidget(QWidget):
         self.interval.setSuffix(" Antworten")
         self.intensity = QComboBox()
         self.intensity.addItem("Sanft — 1 Layer", "gentle")
-        self.intensity.addItem("Ausgewogen — 2 Layer", "balanced")
-        self.intensity.addItem("Wild — bis zu 5 Layer", "wild")
+        self.intensity.addItem("Ausgewogen — 3 Layer", "balanced")
+        self.intensity.addItem("Wild — bis zu 7 Layer", "wild")
 
         form = QFormLayout()
         form.addRow("Automatik", self.enabled)
@@ -65,12 +65,18 @@ class CreativeDirectorWidget(QWidget):
         self.lock_arc = QCheckBox("Session-Arc festhalten")
         self.lock_scene = QCheckBox("Scene Mixer festhalten")
         self.lock_motif = QCheckBox("Visual-Motiv festhalten")
-        lock_row = QHBoxLayout()
-        lock_row.addWidget(self.lock_look)
-        lock_row.addWidget(self.lock_variety)
-        lock_row.addWidget(self.lock_arc)
-        lock_row.addWidget(self.lock_scene)
-        lock_row.addWidget(self.lock_motif)
+        self.lock_mood = QCheckBox("Mood-Grade festhalten")
+        self.lock_detail = QCheckBox("Detail-Akzent festhalten")
+        lock_row_a = QHBoxLayout()
+        lock_row_a.addWidget(self.lock_look)
+        lock_row_a.addWidget(self.lock_variety)
+        lock_row_a.addWidget(self.lock_arc)
+        lock_row_a.addWidget(self.lock_scene)
+        lock_row_b = QHBoxLayout()
+        lock_row_b.addWidget(self.lock_motif)
+        lock_row_b.addWidget(self.lock_mood)
+        lock_row_b.addWidget(self.lock_detail)
+        lock_row_b.addStretch(1)
 
         self.favorite_look = QComboBox()
         self.favorite_arc = QComboBox()
@@ -101,15 +107,16 @@ class CreativeDirectorWidget(QWidget):
 
         note = QLabel(
             "Favoriten werden bei automatisch oder manuell gewürfelten Looks, Arcs und visuellen Motiven "
-            "bevorzugt. Wenn keine Favoriten gesetzt sind, bleibt der gesamte Pool verfügbar. Automatische "
-            "Änderungen gelten jeweils für die nächste Antwort und werden im Kontext-Inspector sichtbar."
+            "bevorzugt. Mood-Grades und Detail-Akzente vermeiden zusätzlich gleichförmige Farbwirkung und "
+            "wiederkehrende kleine Szenendetails. Änderungen gelten jeweils für die nächste Antwort."
         )
         note.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
         layout.addLayout(form)
-        layout.addLayout(lock_row)
+        layout.addLayout(lock_row_a)
+        layout.addLayout(lock_row_b)
         layout.addLayout(favorite_form)
         layout.addWidget(self.status)
         layout.addStretch(1)
@@ -164,7 +171,11 @@ class CreativeDirectorWidget(QWidget):
         self.lock_arc.setChecked(config.lock_arc)
         self.lock_scene.setChecked(config.lock_scene_mix)
         self.lock_motif.setChecked(config.lock_visual_motif)
+        self.lock_mood.setChecked(config.lock_mood_grade)
+        self.lock_detail.setChecked(config.lock_detail_accent)
         self.lock_motif.setEnabled(self.director.motifs is not None)
+        self.lock_mood.setEnabled(self.director.moods is not None)
+        self.lock_detail.setEnabled(self.director.details is not None)
         self._render_status(config)
 
     def _render_status(self, config: CreativeDirectorConfig, message: str = "") -> None:
@@ -177,6 +188,8 @@ class CreativeDirectorWidget(QWidget):
                 ("Arc", config.lock_arc),
                 ("Scene Mixer", config.lock_scene_mix),
                 ("Visual-Motiv", config.lock_visual_motif),
+                ("Mood-Grade", config.lock_mood_grade),
+                ("Detail", config.lock_detail_accent),
             )
             if locked
         ]
@@ -198,6 +211,8 @@ class CreativeDirectorWidget(QWidget):
         config.lock_arc = self.lock_arc.isChecked()
         config.lock_scene_mix = self.lock_scene.isChecked()
         config.lock_visual_motif = self.lock_motif.isChecked()
+        config.lock_mood_grade = self.lock_mood.isChecked()
+        config.lock_detail_accent = self.lock_detail.isChecked()
         return config
 
     def save_config(self) -> None:
@@ -219,6 +234,8 @@ class CreativeDirectorWidget(QWidget):
             "arc": "Arc",
             "scene_mix": "Scene Mixer",
             "visual_motif": "Visual-Motiv",
+            "mood_grade": "Mood-Grade",
+            "detail_accent": "Detail-Akzent",
         }
         changed = ", ".join(labels.get(item, item) for item in result.changed)
         config = self.repository.config(self.conversation_id)
