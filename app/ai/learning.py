@@ -107,8 +107,14 @@ These values are only proposals; application-side locks and limits are authorita
 
         updated = before.model_copy(deep=True)
         deltas = proposal.deltas()
+        changed = False
         for trait_name, signal in deltas.items():
-            updated.evolve(trait_name, signal)
+            trait = getattr(updated, trait_name)
+            old_value = trait.current
+            trait.apply_delta(signal)
+            changed = changed or trait.current != old_value
+        if changed:
+            updated.revision += 1
 
         return LearningResult(
             persona=updated,
