@@ -13,6 +13,7 @@ from app.ai.scene_presets import ScenePreset
 from app.ai.session_arcs import ActiveArc
 from app.ai.session_modes import SessionMode, TRAIT_NAMES
 from app.ai.variety import VarietyCard
+from app.ai.visual_motifs import VisualMotif
 from app.memory.conversations import ConversationRepository
 from app.memory.core_memory import CoreMemoryRepository
 from app.memory.store import StateStore
@@ -46,6 +47,8 @@ class ContextSnapshot(BaseModel):
     arc_context: str = ""
     scene_mix_name: str | None = None
     scene_mix_context: str = ""
+    visual_motif_name: str | None = None
+    visual_motif_context: str = ""
     director_enabled: bool = False
     director_interval: int | None = None
     director_intensity: str | None = None
@@ -94,6 +97,7 @@ def build_context_snapshot(
     look_preset: LookPreset | None = None,
     active_arc: ActiveArc | None = None,
     scene_mix: SceneMix | None = None,
+    visual_motif: VisualMotif | None = None,
     conversations: ConversationRepository | None = None,
     director_config: CreativeDirectorConfig | None = None,
     scene_mix_locks: list[str] | None = None,
@@ -120,6 +124,8 @@ def build_context_snapshot(
         tags.extend(active_arc.style_tags)
     if scene_mix is not None:
         tags.extend(scene_mix.style_tags)
+    if visual_motif is not None:
+        tags.extend(visual_motif.prompt_tags())
     effective_tags = _dedupe_tags(tags)
 
     scene_context = ""
@@ -133,6 +139,7 @@ def build_context_snapshot(
     look_context = look_preset.prompt_text() if look_preset is not None else ""
     arc_context = active_arc.prompt_text() if active_arc is not None else ""
     scene_mix_context = scene_mix.prompt_text() if scene_mix is not None else ""
+    visual_motif_context = visual_motif.prompt_text() if visual_motif is not None else ""
 
     core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
     adaptive_memory = (
@@ -219,6 +226,7 @@ def build_context_snapshot(
                 ("variety", director_config.lock_variety),
                 ("arc", director_config.lock_arc),
                 ("scene_mix", director_config.lock_scene_mix),
+                ("visual_motif", director_config.lock_visual_motif),
             )
             if locked
         ]
@@ -244,6 +252,8 @@ def build_context_snapshot(
         arc_context=arc_context,
         scene_mix_name=scene_mix.title if scene_mix is not None else None,
         scene_mix_context=scene_mix_context,
+        visual_motif_name=visual_motif.name if visual_motif is not None else None,
+        visual_motif_context=visual_motif_context,
         director_enabled=bool(director_config and director_config.enabled),
         director_interval=director_config.interval if director_config is not None else None,
         director_intensity=director_config.intensity if director_config is not None else None,
