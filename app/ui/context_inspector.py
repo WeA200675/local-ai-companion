@@ -81,6 +81,8 @@ class ContextInspectorWidget(QWidget):
             preference_tags=list(self.chat.preference_tags),
             session_mode=self.chat.session_mode,
             scene_preset=self.chat.scene_preset,
+            variety_card=self.chat.variety_card,
+            conversations=self.chat.conversations,
         )
         self._render(snapshot)
 
@@ -103,6 +105,7 @@ class ContextInspectorWidget(QWidget):
 
         lines = [
             f"Modell: {snapshot.model_name}",
+            f"Unterhaltung: {snapshot.conversation_title or 'Legacy/Hauptchat'}",
             f"Kontextfenster: {context_window}",
             f"Antwortbudget: {response_budget}",
             f"Geschätzter Input: ~{snapshot.approx_input_tokens} Token",
@@ -110,6 +113,7 @@ class ContextInspectorWidget(QWidget):
             "",
             f"Session-Modus: {snapshot.session_mode or 'Basis'}",
             f"Szene: {snapshot.scene_name or 'Basis'}",
+            f"Impuls-Deck: {snapshot.variety_name or 'Basis'}",
             f"Aktive Stil-/Präferenz-Tags: {', '.join(snapshot.effective_tags) or 'keine'}",
             "",
             "Persona — Basis → effektiv:",
@@ -133,6 +137,8 @@ class ContextInspectorWidget(QWidget):
         )
         if snapshot.scene_context:
             lines.extend(["", "Temporärer Szenenkontext:", f"  {snapshot.scene_context}"])
+        if snapshot.variety_context:
+            lines.extend(["", "Temporärer Abwechslungs-Impuls:", f"  {snapshot.variety_context}"])
         if snapshot.warnings:
             lines.extend(["", "Hinweise:", *[f"  ⚠ {item}" for item in snapshot.warnings]])
 
