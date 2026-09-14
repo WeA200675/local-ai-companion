@@ -8,6 +8,7 @@ from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.media.comfyui import ComfyUIClient, ComfyUIError, GeneratedMedia
 from app.media.planner import MediaIntent, MediaPlanner
+from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
 from app.media.prompting import build_visual_prompt
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -20,6 +21,7 @@ class MediaResult:
     intent: MediaIntent
     generated: GeneratedMedia
     history_id: int | None = None
+    workflow_profile: str | None = None
 
     @property
     def path(self) -> Path:
@@ -27,7 +29,7 @@ class MediaResult:
 
 
 class MediaService:
-    """Coordinates local visual planning, preference memory and generation."""
+    """Coordinates local visual planning, profile routing, preferences and generation."""
 
     def __init__(
         self,
@@ -42,10 +44,21 @@ class MediaService:
         self.store = store
         self.settings = settings or AppSettings()
         self.planner = MediaPlanner()
+        self.workflow_profiles: list[WorkflowProfile] = []
+        if self.settings.profile_catalog_path is not None:
+            try:
+                catalog = load_workflow_catalog(self.settings.profile_catalog_path)
+                self.workflow_profiles = catalog.profiles
+            except (OSError, ValueError):
+                self.workflow_profiles = []
 
     @property
     def enabled(self) -> bool:
-        return self.settings.media_enabled and self.backend.enabled
+        has_profile = any(
+            profile.enabled and profile.workflow_path.exists()
+            for profile in self.workflow_profiles
+        )
+        return self.settings.media_enabled and (self.backend.enabled or has_profile)
 
     def close(self) -> None:
         self.backend.close()
@@ -100,6 +113,22 @@ class MediaService:
                 return fallback
         return None
 
+    def _select_workflow_profile(
+        self,
+        intent: MediaIntent,
+        *,
+        continuity_key: str | None,
+        reference_path: Path | None,
+    ) -> WorkflowProfile | None:
+        if not self.workflow_profiles:
+            return None
+        return choose_workflow_profile(
+            self.workflow_profiles,
+            kind=intent.kind,
+            character_focus=bool(continuity_key),
+            reference_available=reference_path is not None,
+        )
+
     def plan(
         self,
         *,
@@ -113,6 +142,15 @@ class MediaService:
 
         tags = [tag.strip() for tag in preference_tags if tag.strip()]
         liked_cues, disliked_cues = self._visual_cues()
+        available_profile_kinds = sorted(
+            {
+                kind
+                for profile in self.workflow_profiles
+                if profile.enabled and profile.workflow_path.exists()
+                for kind in profile.kinds
+            }
+        )
+        available_text = ", ".join(available_profile_kinds) if available_profile_kinds else "legacy workflow"
         planner_prompt = f"""You are the visual director for a private local adult companion app.
 Return exactly one JSON object matching this schema:
 {{
@@ -127,7 +165,8 @@ Return exactly one JSON object matching this schema:
   "reason": string
 }}
 
-Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion is important.
+Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion materially improves the moment.
+Configured local workflow capabilities: {available_text}.
 Keep every depicted person clearly adult. Visuals may be provocative, fetish-inspired, dominant, teasing, sensual, or dark, but do not plan graphic sexual acts, genital-focused imagery, minors, coercive violence, gore, or injury.
 Use historical image feedback as a soft style preference only; the user's current request and scene context take priority.
 When the recurring companion character is depicted and continuity is enabled, use continuity_key "{self.settings.continuity_key}". Otherwise use null.
@@ -191,12 +230,25 @@ Do not include prose outside the JSON object."""
             positive = f"{positive}, {profile.appearance_prompt}"
 
         reference_path = self._reference_path(continuity_key)
+        workflow_profile = self._select_workflow_profile(
+            intent,
+            continuity_key=continuity_key,
+            reference_path=reference_path,
+        )
+        if workflow_profile is not None and reference_path is not None:
+            if not workflow_profile.reference_configured:
+                reference_path = None
+        elif workflow_profile is None and reference_path is not None:
+            if not self.backend.reference_configured:
+                reference_path = None
+
         try:
             generated = self.backend.generate(
                 positive,
                 negative,
                 seed=seed,
                 reference_path=reference_path,
+                profile=workflow_profile,
             )
         except ComfyUIError:
             return None
@@ -207,13 +259,21 @@ Do not include prose outside the JSON object."""
 
         history_id = None
         if self.store is not None:
+            intent_payload = intent.model_dump(mode="json")
+            if workflow_profile is not None:
+                intent_payload["workflow_profile"] = workflow_profile.id
             history_id = self.store.record_media_event(
                 path=str(generated.path),
                 kind=generated.kind,
                 prompt_id=generated.prompt_id,
                 seed=generated.seed,
                 continuity_key=continuity_key,
-                intent=intent.model_dump(mode="json"),
+                intent=intent_payload,
             )
 
-        return MediaResult(intent=intent, generated=generated, history_id=history_id)
+        return MediaResult(
+            intent=intent,
+            generated=generated,
+            history_id=history_id,
+            workflow_profile=workflow_profile.id if workflow_profile is not None else None,
+        )
