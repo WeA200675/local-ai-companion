@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -39,25 +40,71 @@ class TraitEditor(QWidget):
     def __init__(self, trait: Trait, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.trait = trait
+
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 100)
-        self.slider.setValue(round(trait.current * 100))
-        self.value_label = QLabel(f"{self.slider.value()}%")
+        self.value_label = QLabel()
+        self.value_label.setMinimumWidth(38)
+        self.minimum = self._percent_spin()
+        self.maximum = self._percent_spin()
+        self.learning_rate = self._percent_spin()
         self.locked = QCheckBox("gesperrt")
-        self.locked.setChecked(trait.locked)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.slider, 1)
         row.addWidget(self.value_label)
+        row.addWidget(QLabel("Min"))
+        row.addWidget(self.minimum)
+        row.addWidget(QLabel("Max"))
+        row.addWidget(self.maximum)
+        row.addWidget(QLabel("Lernen"))
+        row.addWidget(self.learning_rate)
         row.addWidget(self.locked)
 
         self.slider.valueChanged.connect(self._slider_changed)
+        self.minimum.valueChanged.connect(self._minimum_changed)
+        self.maximum.valueChanged.connect(self._maximum_changed)
+        self.learning_rate.valueChanged.connect(self._learning_rate_changed)
         self.locked.toggled.connect(self._lock_changed)
+        self.refresh(trait)
+
+    @staticmethod
+    def _percent_spin() -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(0, 100)
+        spin.setSuffix("%")
+        spin.setMaximumWidth(76)
+        return spin
 
     def _slider_changed(self, value: int) -> None:
         self.value_label.setText(f"{value}%")
         self.trait.current = value / 100
+        self.changed.emit()
+
+    def _minimum_changed(self, value: int) -> None:
+        if value > self.maximum.value():
+            self.maximum.setValue(value)
+        self._apply_bounds(value, self.maximum.value())
+
+    def _maximum_changed(self, value: int) -> None:
+        if value < self.minimum.value():
+            self.minimum.setValue(value)
+        self._apply_bounds(self.minimum.value(), value)
+
+    def _apply_bounds(self, minimum: int, maximum: int) -> None:
+        self.trait.user_min = minimum / 100
+        self.trait.user_max = maximum / 100
+        current = min(maximum, max(minimum, round(self.trait.current * 100)))
+        self.slider.blockSignals(True)
+        self.slider.setRange(minimum, maximum)
+        self.slider.setValue(current)
+        self.slider.blockSignals(False)
+        self.trait.current = current / 100
+        self.value_label.setText(f"{current}%")
+        self.changed.emit()
+
+    def _learning_rate_changed(self, value: int) -> None:
+        self.trait.learning_rate = value / 100
         self.changed.emit()
 
     def _lock_changed(self, locked: bool) -> None:
@@ -66,13 +113,25 @@ class TraitEditor(QWidget):
 
     def refresh(self, trait: Trait) -> None:
         self.trait = trait
-        self.slider.blockSignals(True)
-        self.locked.blockSignals(True)
-        self.slider.setValue(round(trait.current * 100))
-        self.value_label.setText(f"{self.slider.value()}%")
+        widgets = (self.slider, self.minimum, self.maximum, self.learning_rate, self.locked)
+        for widget in widgets:
+            widget.blockSignals(True)
+
+        minimum = round(trait.user_min * 100)
+        maximum = round(trait.user_max * 100)
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+        current = min(maximum, max(minimum, round(trait.current * 100)))
+        self.minimum.setValue(minimum)
+        self.maximum.setValue(maximum)
+        self.learning_rate.setValue(round(trait.learning_rate * 100))
+        self.slider.setRange(minimum, maximum)
+        self.slider.setValue(current)
+        self.value_label.setText(f"{current}%")
         self.locked.setChecked(trait.locked)
-        self.slider.blockSignals(False)
-        self.locked.blockSignals(False)
+
+        for widget in widgets:
+            widget.blockSignals(False)
 
 
 class PersonaLab(QWidget):
@@ -121,6 +180,11 @@ class PersonaLab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(
+            QLabel(
+                "Min/Max begrenzen sowohl manuelle Werte als auch Lernen; die Lernrate bestimmt, wie stark Feedback wirkt."
+            )
+        )
         layout.addWidget(QLabel("Persona-Historie"))
         layout.addWidget(self.snapshot_list, 1)
         layout.addWidget(QLabel("Lern-Audit (neueste zuerst)"))
@@ -143,6 +207,7 @@ class PersonaLab(QWidget):
         for name, editor in self.editors.items():
             editor.refresh(getattr(persona, name))
         self.refresh_learning_events()
+        self.refresh_snapshots()
 
     def _save_live_state(self) -> None:
         self.persona.name = self.name_edit.text().strip() or "Companion"
