@@ -8,6 +8,8 @@ from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
 from app.ai.scene_presets import ScenePreset
 from app.ai.session_modes import SessionMode, TRAIT_NAMES
+from app.ai.variety import VarietyCard
+from app.memory.conversations import ConversationRepository
 from app.memory.core_memory import CoreMemoryRepository
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -23,12 +25,16 @@ class ContextSnapshot(BaseModel):
     model_name: str
     context_window: int | None
     response_budget: int | None
+    conversation_id: str | None = None
+    conversation_title: str | None = None
     base_traits: dict[str, float]
     effective_traits: dict[str, float]
     locked_traits: list[str]
     session_mode: str | None
     scene_name: str | None
     scene_context: str
+    variety_name: str | None = None
+    variety_context: str = ""
     effective_tags: list[str]
     core_memory: list[str]
     adaptive_memory: list[str]
@@ -68,6 +74,8 @@ def build_context_snapshot(
     preference_tags: list[str],
     session_mode: SessionMode | None = None,
     scene_preset: ScenePreset | None = None,
+    variety_card: VarietyCard | None = None,
+    conversations: ConversationRepository | None = None,
 ) -> ContextSnapshot:
     """Build the same high-level context layers used for a new local chat request.
 
@@ -83,11 +91,17 @@ def build_context_snapshot(
         tags.extend(session_mode.style_tags)
     if scene_preset is not None:
         tags.extend(scene_preset.style_tags)
+    if variety_card is not None:
+        tags.extend(variety_card.style_tags)
     effective_tags = _dedupe_tags(tags)
 
     scene_context = ""
     if scene_preset is not None:
         scene_context = f"{scene_preset.name}: {scene_preset.context}"
+
+    variety_context = ""
+    if variety_card is not None:
+        variety_context = f"{variety_card.name}: {variety_card.instruction}"
 
     core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
     adaptive_memory = (
@@ -102,9 +116,22 @@ def build_context_snapshot(
         adaptive_memory,
         core_memory,
         scene_context,
+        variety_context,
     )
 
-    messages = store.list_messages(limit=settings.chat_history_messages)
+    conversation_id: str | None = None
+    conversation_title: str | None = None
+    if conversations is not None:
+        conversation_id = conversations.active_id()
+        thread = conversations.get(conversation_id, include_archived=False)
+        conversation_title = thread.title if thread is not None else None
+        messages = conversations.list_messages(
+            limit=settings.chat_history_messages,
+            conversation_id=conversation_id,
+        )
+    else:
+        messages = store.list_messages(limit=settings.chat_history_messages)
+
     history: list[ContextHistoryItem] = []
     history_tokens = 0
     for message in messages:
@@ -157,12 +184,16 @@ def build_context_snapshot(
         model_name=settings.model_name,
         context_window=context_window,
         response_budget=response_budget,
+        conversation_id=conversation_id,
+        conversation_title=conversation_title,
         base_traits=base_traits,
         effective_traits=effective_traits,
         locked_traits=locked_traits,
         session_mode=session_mode.name if session_mode is not None else None,
         scene_name=scene_preset.name if scene_preset is not None else None,
         scene_context=scene_context,
+        variety_name=variety_card.name if variety_card is not None else None,
+        variety_context=variety_context,
         effective_tags=effective_tags,
         core_memory=core_memory,
         adaptive_memory=adaptive_memory,
