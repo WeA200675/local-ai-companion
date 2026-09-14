@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
+
+from app.ai.creative_director import CreativeDirector
 from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.prompting import build_system_prompt
 from app.ai.scene_mixer import SceneMix, SceneMixerRepository
@@ -15,6 +18,8 @@ from app.ui.chat import ChatWidget, MediaWorker
 class ModeAwareChatWidget(ChatWidget):
     """ChatWidget variant with temporary mode, scene, variety and creative overlays."""
 
+    creative_context_changed = Signal()
+
     def __init__(
         self,
         *args,
@@ -29,6 +34,7 @@ class ModeAwareChatWidget(ChatWidget):
         active_arc: ActiveArc | None = None,
         mixer_repository: SceneMixerRepository | None = None,
         scene_mix: SceneMix | None = None,
+        creative_director: CreativeDirector | None = None,
         **kwargs,
     ) -> None:
         self.session_mode = session_mode
@@ -42,6 +48,7 @@ class ModeAwareChatWidget(ChatWidget):
         self.active_arc = active_arc
         self.mixer_repository = mixer_repository
         self.scene_mix = scene_mix
+        self.creative_director = creative_director
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
 
@@ -89,12 +96,10 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Scene Mixer: {mix.title}")
 
-    def set_conversation(self, conversation_id: str) -> None:
+    def refresh_creative_overlays(self) -> None:
         if self.conversations is None:
             return
-        if not self.can_reconfigure():
-            raise RuntimeError("Unterhaltung kann während eines lokalen Jobs nicht gewechselt werden")
-        self.conversations.set_active(conversation_id)
+        conversation_id = self.conversations.active_id()
         if self.variety_repository is not None:
             self.variety_card = self.variety_repository.active(conversation_id)
         if self.look_repository is not None:
@@ -103,6 +108,14 @@ class ModeAwareChatWidget(ChatWidget):
             self.active_arc = self.arc_repository.active(conversation_id)
         if self.mixer_repository is not None:
             self.scene_mix = self.mixer_repository.active(conversation_id)
+
+    def set_conversation(self, conversation_id: str) -> None:
+        if self.conversations is None:
+            return
+        if not self.can_reconfigure():
+            raise RuntimeError("Unterhaltung kann während eines lokalen Jobs nicht gewechselt werden")
+        self.conversations.set_active(conversation_id)
+        self.refresh_creative_overlays()
         self._pending_user_text = ""
         self._latest_user_text = ""
         self._latest_assistant_text = ""
@@ -189,6 +202,30 @@ class ModeAwareChatWidget(ChatWidget):
             self._arc_context(),
             self._scene_mix_context(),
         )
+
+    def _model_completed(self, reply: str) -> None:
+        # Finish the current response and its media planning with the context that
+        # produced it. Any automatic rotation below applies only to the next turn.
+        super()._model_completed(reply)
+        if self.creative_director is None or self.conversations is None:
+            return
+        conversation_id = self.conversations.active_id()
+        result = self.creative_director.maybe_rotate(
+            conversation_id,
+            assistant_count=self.store.assistant_message_count(),
+        )
+        if result is None or not result.changed_anything:
+            return
+        self.refresh_creative_overlays()
+        labels = {
+            "look": "Look",
+            "variety": "Impuls",
+            "arc": "Arc",
+            "scene_mix": "Scene Mixer",
+        }
+        summary = ", ".join(labels.get(item, item) for item in result.changed)
+        self.status.setText(f"Kreative Regie für nächste Antwort: {summary}")
+        self.creative_context_changed.emit()
 
     def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
         if not self.media_service or not self.media_service.enabled:

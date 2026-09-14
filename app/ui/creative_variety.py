@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -11,9 +12,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ai.creative_director import CreativeDirector, CreativeDirectorRepository
 from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.session_arcs import ActiveArc, SessionArcRepository
+from app.ui.creative_director import CreativeDirectorWidget
 
 
 class LookPresetWidget(QWidget):
@@ -197,13 +200,23 @@ class SceneMixerWidget(QWidget):
 
         intro = QLabel(
             "Der Scene Mixer kombiniert lokal Setting, Licht, Bildaufbau und Atmosphäre. "
-            "Er ergänzt eine aktive Szene, ersetzt sie aber nicht und lernt die Mischung nicht dauerhaft."
+            "Einzelne Dimensionen können festgehalten werden, während der Rest weiter variiert."
         )
         intro.setWordWrap(True)
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.draw_button = QPushButton("🎲 Neue Szene mischen")
         self.clear_button = QPushButton("Mixer ausschalten")
+
+        self.lock_setting = QCheckBox("Setting sperren")
+        self.lock_lighting = QCheckBox("Licht sperren")
+        self.lock_composition = QCheckBox("Komposition sperren")
+        self.lock_atmosphere = QCheckBox("Atmosphäre sperren")
+        lock_row = QHBoxLayout()
+        lock_row.addWidget(self.lock_setting)
+        lock_row.addWidget(self.lock_lighting)
+        lock_row.addWidget(self.lock_composition)
+        lock_row.addWidget(self.lock_atmosphere)
 
         row = QHBoxLayout()
         row.addWidget(self.clear_button)
@@ -213,20 +226,57 @@ class SceneMixerWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
         layout.addWidget(self.status)
+        layout.addLayout(lock_row)
         layout.addStretch(1)
         layout.addLayout(row)
 
         self.draw_button.clicked.connect(self.draw)
         self.clear_button.clicked.connect(self.clear)
+        self.lock_setting.toggled.connect(
+            lambda checked: self._set_locked("setting", checked)
+        )
+        self.lock_lighting.toggled.connect(
+            lambda checked: self._set_locked("lighting", checked)
+        )
+        self.lock_composition.toggled.connect(
+            lambda checked: self._set_locked("composition", checked)
+        )
+        self.lock_atmosphere.toggled.connect(
+            lambda checked: self._set_locked("atmosphere", checked)
+        )
+        self._reload()
+
+    def _reload(self) -> None:
+        locks = self.repository.locked_dimensions(self.conversation_id)
+        controls = {
+            "setting": self.lock_setting,
+            "lighting": self.lock_lighting,
+            "composition": self.lock_composition,
+            "atmosphere": self.lock_atmosphere,
+        }
+        for dimension, control in controls.items():
+            control.blockSignals(True)
+            control.setChecked(dimension in locks)
+            control.blockSignals(False)
+        self._render(self.repository.active(self.conversation_id))
+
+    def _set_locked(self, dimension: str, locked: bool) -> None:
+        self.repository.set_dimension_locked(self.conversation_id, dimension, locked)
         self._render(self.repository.active(self.conversation_id))
 
     def _render(self, mix: SceneMix | None) -> None:
         self.clear_button.setEnabled(mix is not None)
+        locks = self.repository.locked_dimensions(self.conversation_id)
+        lock_text = ", ".join(sorted(locks)) or "keine"
         if mix is None:
-            self.status.setText("Kein gemischter Szenen-Layer aktiv.")
+            self.status.setText(
+                f"Kein gemischter Szenen-Layer aktiv. Gesperrte Dimensionen: {lock_text}"
+            )
             return
         parts = " · ".join(f"{key}: {value}" for key, value in mix.components.items())
-        self.status.setText(f"Aktiv: {mix.title}\n{parts}\n\n{mix.context}")
+        self.status.setText(
+            f"Aktiv: {mix.title}\n{parts}\nGesperrt: {lock_text}\n\n{mix.context}"
+        )
 
     def draw(self) -> None:
         mix = self.repository.draw(self.conversation_id)
@@ -240,28 +290,38 @@ class SceneMixerWidget(QWidget):
 
     def set_conversation(self, conversation_id: str) -> None:
         self.conversation_id = conversation_id
-        self._render(self.repository.active(conversation_id))
+        self._reload()
 
 
 class CreativeVarietyWidget(QWidget):
     look_changed = Signal(object)
     arc_changed = Signal(object)
     scene_mix_changed = Signal(object)
+    director_applied = Signal(object)
 
     def __init__(
         self,
         look_repository: LookPresetRepository,
         arc_repository: SessionArcRepository,
         mixer_repository: SceneMixerRepository,
+        director: CreativeDirector,
+        director_repository: CreativeDirectorRepository,
         conversation_id: str,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.conversation_id = conversation_id
+        self.director = CreativeDirectorWidget(
+            director,
+            director_repository,
+            conversation_id,
+        )
         self.looks = LookPresetWidget(look_repository, conversation_id)
         self.arcs = SessionArcWidget(arc_repository, conversation_id)
         self.mixer = SceneMixerWidget(mixer_repository, conversation_id)
 
         tabs = QTabWidget()
+        tabs.addTab(self.director, "Regie")
         tabs.addTab(self.looks, "Looks")
         tabs.addTab(self.arcs, "Session-Arcs")
         tabs.addTab(self.mixer, "Scene Mixer")
@@ -272,11 +332,22 @@ class CreativeVarietyWidget(QWidget):
         self.looks.changed.connect(self.look_changed)
         self.arcs.changed.connect(self.arc_changed)
         self.mixer.changed.connect(self.scene_mix_changed)
+        self.director.applied.connect(self._director_applied)
 
-    def set_conversation(self, conversation_id: str) -> None:
+    def _director_applied(self, result: object) -> None:
+        self.refresh_from_repositories()
+        self.director_applied.emit(result)
+
+    def refresh_from_repositories(self) -> None:
+        conversation_id = self.conversation_id
         self.looks.set_conversation(conversation_id)
         self.arcs.set_conversation(conversation_id)
         self.mixer.set_conversation(conversation_id)
+        self.director.set_conversation(conversation_id)
         self.look_changed.emit(self.looks.repository.active(conversation_id))
         self.arc_changed.emit(self.arcs.repository.active(conversation_id))
         self.scene_mix_changed.emit(self.mixer.repository.active(conversation_id))
+
+    def set_conversation(self, conversation_id: str) -> None:
+        self.conversation_id = conversation_id
+        self.refresh_from_repositories()

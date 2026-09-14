@@ -4,6 +4,7 @@ from math import ceil
 
 from pydantic import BaseModel, Field
 
+from app.ai.creative_director import CreativeDirectorConfig
 from app.ai.look_presets import LookPreset
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
@@ -45,6 +46,11 @@ class ContextSnapshot(BaseModel):
     arc_context: str = ""
     scene_mix_name: str | None = None
     scene_mix_context: str = ""
+    director_enabled: bool = False
+    director_interval: int | None = None
+    director_intensity: str | None = None
+    director_locks: list[str] = Field(default_factory=list)
+    scene_mix_locks: list[str] = Field(default_factory=list)
     effective_tags: list[str]
     core_memory: list[str]
     adaptive_memory: list[str]
@@ -89,6 +95,8 @@ def build_context_snapshot(
     active_arc: ActiveArc | None = None,
     scene_mix: SceneMix | None = None,
     conversations: ConversationRepository | None = None,
+    director_config: CreativeDirectorConfig | None = None,
+    scene_mix_locks: list[str] | None = None,
 ) -> ContextSnapshot:
     """Build the same high-level context layers used for a new local chat request.
 
@@ -202,6 +210,19 @@ def build_context_snapshot(
     }
     locked_traits = [name for name in TRAIT_NAMES if bool(getattr(persona, name).locked)]
 
+    director_locks: list[str] = []
+    if director_config is not None:
+        director_locks = [
+            label
+            for label, locked in (
+                ("look", director_config.lock_look),
+                ("variety", director_config.lock_variety),
+                ("arc", director_config.lock_arc),
+                ("scene_mix", director_config.lock_scene_mix),
+            )
+            if locked
+        ]
+
     return ContextSnapshot(
         model_name=settings.model_name,
         context_window=context_window,
@@ -223,6 +244,11 @@ def build_context_snapshot(
         arc_context=arc_context,
         scene_mix_name=scene_mix.title if scene_mix is not None else None,
         scene_mix_context=scene_mix_context,
+        director_enabled=bool(director_config and director_config.enabled),
+        director_interval=director_config.interval if director_config is not None else None,
+        director_intensity=director_config.intensity if director_config is not None else None,
+        director_locks=director_locks,
+        scene_mix_locks=sorted(scene_mix_locks or []),
         effective_tags=effective_tags,
         core_memory=core_memory,
         adaptive_memory=adaptive_memory,

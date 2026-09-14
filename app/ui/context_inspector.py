@@ -74,6 +74,18 @@ class ContextInspectorWidget(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        director_config = None
+        scene_locks: list[str] = []
+        conversation_id = None
+        if self.chat.conversations is not None:
+            conversation_id = self.chat.conversations.active_id()
+        if conversation_id and self.chat.creative_director is not None:
+            director_config = self.chat.creative_director.repository.config(conversation_id)
+        if conversation_id and self.chat.mixer_repository is not None:
+            scene_locks = sorted(
+                self.chat.mixer_repository.locked_dimensions(conversation_id)
+            )
+
         snapshot = build_context_snapshot(
             store=self.store,
             settings=self.chat.settings,
@@ -86,6 +98,8 @@ class ContextInspectorWidget(QWidget):
             active_arc=self.chat.active_arc,
             scene_mix=self.chat.scene_mix,
             conversations=self.chat.conversations,
+            director_config=director_config,
+            scene_mix_locks=scene_locks,
         )
         self._render(snapshot)
 
@@ -105,6 +119,12 @@ class ContextInspectorWidget(QWidget):
             if snapshot.approx_remaining_tokens is not None
             else "nicht berechenbar ohne explizites Kontextfenster"
         )
+        director = "aus"
+        if snapshot.director_enabled:
+            director = (
+                f"an · alle {snapshot.director_interval} Antworten · "
+                f"{snapshot.director_intensity}"
+            )
 
         lines = [
             f"Modell: {snapshot.model_name}",
@@ -121,6 +141,9 @@ class ContextInspectorWidget(QWidget):
             f"Session-Arc: {snapshot.arc_name or 'aus'}"
             + (f" · {snapshot.arc_stage}" if snapshot.arc_stage else ""),
             f"Scene Mixer: {snapshot.scene_mix_name or 'aus'}",
+            f"Kreative Regie: {director}",
+            f"Regie-Sperren: {', '.join(snapshot.director_locks) or 'keine'}",
+            f"Scene-Mixer-Sperren: {', '.join(snapshot.scene_mix_locks) or 'keine'}",
             f"Aktive Stil-/Präferenz-Tags: {', '.join(snapshot.effective_tags) or 'keine'}",
             "",
             "Persona — Basis → effektiv:",

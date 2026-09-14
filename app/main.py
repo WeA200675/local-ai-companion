@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
+from app.ai.creative_director import CreativeDirector, CreativeDirectorRepository
 from app.ai.look_presets import LookPresetRepository
 from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
@@ -65,6 +66,14 @@ class MainWindow(QMainWindow):
         self.look_repository = LookPresetRepository(self.store)
         self.arc_repository = SessionArcRepository(self.store)
         self.mixer_repository = SceneMixerRepository(self.store)
+        self.director_repository = CreativeDirectorRepository(self.store)
+        self.creative_director = CreativeDirector(
+            self.director_repository,
+            self.look_repository,
+            self.arc_repository,
+            self.mixer_repository,
+            self.variety_repository,
+        )
 
         self.model, self.media_service = self._build_services(self.settings)
         self.session_modes = SessionModesWidget(self.store)
@@ -90,6 +99,7 @@ class MainWindow(QMainWindow):
             active_arc=self.arc_repository.active(active_conversation_id),
             mixer_repository=self.mixer_repository,
             scene_mix=self.mixer_repository.active(active_conversation_id),
+            creative_director=self.creative_director,
         )
         self.conversations_widget = ConversationsWidget(
             self.conversations_repository,
@@ -103,6 +113,8 @@ class MainWindow(QMainWindow):
             self.look_repository,
             self.arc_repository,
             self.mixer_repository,
+            self.creative_director,
+            self.director_repository,
             active_conversation_id,
         )
         self.context_inspector = ContextInspectorWidget(self.store, self.chat)
@@ -154,6 +166,8 @@ class MainWindow(QMainWindow):
         self.creative_variety.scene_mix_changed.connect(
             lambda _mix: self.context_inspector.refresh()
         )
+        self.creative_variety.director_applied.connect(self._creative_director_applied)
+        self.chat.creative_context_changed.connect(self._creative_director_auto_changed)
         self.chat.memory_changed.connect(self.memory_lab.refresh)
         self.chat.memory_changed.connect(self.context_inspector.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
@@ -308,6 +322,18 @@ class MainWindow(QMainWindow):
         self.media_service = new_media_service
         old_media_service.close()
         old_model.close()
+        self.context_inspector.refresh()
+
+    def _creative_director_applied(self, _result: object) -> None:
+        conversation_id = self.conversations_repository.active_id()
+        self.chat.refresh_creative_overlays()
+        self.variety_widget.set_conversation(conversation_id)
+        self.context_inspector.refresh()
+
+    def _creative_director_auto_changed(self) -> None:
+        conversation_id = self.conversations_repository.active_id()
+        self.variety_widget.set_conversation(conversation_id)
+        self.creative_variety.refresh_from_repositories()
         self.context_inspector.refresh()
 
     def _conversation_changed(self, conversation_id: str) -> None:
