@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+from math import ceil
+
+from pydantic import BaseModel, Field
+
+from app.ai.persona import PersonaState
+from app.ai.prompting import build_system_prompt
+from app.ai.scene_presets import ScenePreset
+from app.ai.session_modes import SessionMode, TRAIT_NAMES
+from app.memory.core_memory import CoreMemoryRepository
+from app.memory.store import StateStore
+from app.settings import AppSettings
+
+
+class ContextHistoryItem(BaseModel):
+    role: str
+    preview: str
+    approx_tokens: int = Field(ge=0)
+
+
+class ContextSnapshot(BaseModel):
+    model_name: str
+    context_window: int | None
+    response_budget: int | None
+    base_traits: dict[str, float]
+    effective_traits: dict[str, float]
+    locked_traits: list[str]
+    session_mode: str | None
+    scene_name: str | None
+    scene_context: str
+    effective_tags: list[str]
+    core_memory: list[str]
+    adaptive_memory: list[str]
+    history: list[ContextHistoryItem]
+    system_prompt: str
+    approx_input_tokens: int = Field(ge=0)
+    approx_remaining_tokens: int | None = Field(default=None, ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
+def approximate_tokens(text: str) -> int:
+    """Cheap local heuristic; deliberately avoids another tokenizer dependency."""
+
+    clean = text.strip()
+    if not clean:
+        return 0
+    return max(1, ceil(len(clean) / 4))
+
+
+def _dedupe_tags(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = value.strip()
+        key = clean.casefold()
+        if clean and key not in seen:
+            seen.add(key)
+            result.append(clean)
+    return result
+
+
+def build_context_snapshot(
+    *,
+    store: StateStore,
+    settings: AppSettings,
+    persona: PersonaState,
+    preference_tags: list[str],
+    session_mode: SessionMode | None = None,
+    scene_preset: ScenePreset | None = None,
+) -> ContextSnapshot:
+    """Build the same high-level context layers used for a new local chat request.
+
+    Token counts are estimates only. Ollama/model tokenizers remain authoritative.
+    """
+
+    effective_persona = (
+        session_mode.apply(persona) if session_mode is not None else persona.model_copy(deep=True)
+    )
+
+    tags = list(preference_tags)
+    if session_mode is not None:
+        tags.extend(session_mode.style_tags)
+    if scene_preset is not None:
+        tags.extend(scene_preset.style_tags)
+    effective_tags = _dedupe_tags(tags)
+
+    scene_context = ""
+    if scene_preset is not None:
+        scene_context = f"{scene_preset.name}: {scene_preset.context}"
+
+    core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
+    adaptive_memory = (
+        store.list_active_memory_summaries(limit=12)
+        if settings.adaptive_memory_enabled
+        else []
+    )
+
+    system_prompt = build_system_prompt(
+        effective_persona,
+        effective_tags,
+        adaptive_memory,
+        core_memory,
+        scene_context,
+    )
+
+    messages = store.list_messages(limit=settings.chat_history_messages)
+    history: list[ContextHistoryItem] = []
+    history_tokens = 0
+    for message in messages:
+        tokens = approximate_tokens(message.content) + 4  # rough per-message framing overhead
+        history_tokens += tokens
+        preview = " ".join(message.content.split())
+        if len(preview) > 180:
+            preview = preview[:177] + "…"
+        history.append(
+            ContextHistoryItem(
+                role=message.role,
+                preview=preview,
+                approx_tokens=tokens,
+            )
+        )
+
+    approx_input_tokens = approximate_tokens(system_prompt) + history_tokens
+    context_window = settings.chat_num_ctx or None
+    response_budget = settings.chat_num_predict or None
+    approx_remaining: int | None = None
+    warnings: list[str] = []
+
+    if context_window is not None:
+        reserved_reply = response_budget or 0
+        approx_remaining = max(0, context_window - approx_input_tokens - reserved_reply)
+        if approx_input_tokens >= context_window:
+            warnings.append(
+                "Der geschätzte Eingabekontext erreicht oder überschreitet das konfigurierte Kontextfenster."
+            )
+        elif approx_input_tokens >= int(context_window * 0.80):
+            warnings.append(
+                "Der geschätzte Eingabekontext belegt mindestens 80 % des konfigurierten Kontextfensters."
+            )
+        if response_budget and approx_input_tokens + response_budget > context_window:
+            warnings.append(
+                "Eingabekontext plus Antwortbudget überschreiten voraussichtlich das konfigurierte Kontextfenster."
+            )
+
+    base_traits = {
+        name: float(getattr(persona, name).current)
+        for name in TRAIT_NAMES
+    }
+    effective_traits = {
+        name: float(getattr(effective_persona, name).current)
+        for name in TRAIT_NAMES
+    }
+    locked_traits = [name for name in TRAIT_NAMES if bool(getattr(persona, name).locked)]
+
+    return ContextSnapshot(
+        model_name=settings.model_name,
+        context_window=context_window,
+        response_budget=response_budget,
+        base_traits=base_traits,
+        effective_traits=effective_traits,
+        locked_traits=locked_traits,
+        session_mode=session_mode.name if session_mode is not None else None,
+        scene_name=scene_preset.name if scene_preset is not None else None,
+        scene_context=scene_context,
+        effective_tags=effective_tags,
+        core_memory=core_memory,
+        adaptive_memory=adaptive_memory,
+        history=history,
+        system_prompt=system_prompt,
+        approx_input_tokens=approx_input_tokens,
+        approx_remaining_tokens=approx_remaining,
+        warnings=warnings,
+    )
