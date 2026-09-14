@@ -108,6 +108,8 @@ class PersonaLab(QWidget):
             form.addRow(name.capitalize(), editor)
 
         self.snapshot_list = QListWidget()
+        self.learning_list = QListWidget()
+        self.learning_list.setMaximumHeight(150)
         self.save_snapshot_button = QPushButton("Snapshot speichern")
         self.restore_button = QPushButton("Ausgewählten Snapshot laden")
         self.refresh_button = QPushButton("Historie aktualisieren")
@@ -121,15 +123,26 @@ class PersonaLab(QWidget):
         layout.addLayout(form)
         layout.addWidget(QLabel("Persona-Historie"))
         layout.addWidget(self.snapshot_list, 1)
+        layout.addWidget(QLabel("Lern-Audit (neueste zuerst)"))
+        layout.addWidget(self.learning_list)
         layout.addLayout(buttons)
 
         self.name_edit.editingFinished.connect(self._save_live_state)
         self.tags_edit.editingFinished.connect(self._save_tags)
         self.save_snapshot_button.clicked.connect(self.save_snapshot)
         self.restore_button.clicked.connect(self.restore_selected)
-        self.refresh_button.clicked.connect(self.refresh_snapshots)
+        self.refresh_button.clicked.connect(self.refresh_history)
 
-        self.refresh_snapshots()
+        self.refresh_history()
+
+    def set_persona(self, persona: PersonaState) -> None:
+        """Refresh editors when the chat learning layer changes the persona."""
+
+        self.persona = persona
+        self.name_edit.setText(persona.name)
+        for name, editor in self.editors.items():
+            editor.refresh(getattr(persona, name))
+        self.refresh_learning_events()
 
     def _save_live_state(self) -> None:
         self.persona.name = self.name_edit.text().strip() or "Companion"
@@ -149,6 +162,10 @@ class PersonaLab(QWidget):
         self.refresh_snapshots()
         QMessageBox.information(self, "Snapshot", f"Snapshot #{snapshot.id} gespeichert.")
 
+    def refresh_history(self) -> None:
+        self.refresh_snapshots()
+        self.refresh_learning_events()
+
     def refresh_snapshots(self) -> None:
         self.snapshot_list.clear()
         with self.session_factory() as session:
@@ -158,6 +175,25 @@ class PersonaLab(QWidget):
             item = QListWidgetItem(f"#{snapshot.id}  {snapshot.kind}  {stamp}")
             item.setData(Qt.ItemDataRole.UserRole, snapshot.id)
             self.snapshot_list.addItem(item)
+
+    def refresh_learning_events(self) -> None:
+        self.learning_list.clear()
+        for event in self.store.list_learning_events(limit=30):
+            created_at = event["created_at"]
+            stamp = created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            deltas = event["deltas"]
+            changed = ", ".join(
+                f"{name} {float(value):+.2f}"
+                for name, value in deltas.items()
+                if abs(float(value)) >= 0.01
+            )
+            if not changed:
+                changed = "keine Änderung"
+            rationale = str(event["rationale"]).strip()
+            suffix = f" — {rationale}" if rationale else ""
+            self.learning_list.addItem(
+                f"{stamp}  {event['feedback']}: {changed}{suffix}"
+            )
 
     def restore_selected(self) -> None:
         item = self.snapshot_list.currentItem()
@@ -182,4 +218,4 @@ class PersonaLab(QWidget):
         for name, editor in self.editors.items():
             editor.refresh(getattr(restored, name))
         self.persona_changed.emit(restored)
-        self.refresh_snapshots()
+        self.refresh_history()
