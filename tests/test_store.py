@@ -13,6 +13,11 @@ def test_store_round_trip(tmp_path) -> None:
     store.save_preference_tags(["latex", "teasing", "latex"])
     store.append_message("user", "hello")
     store.append_message("assistant", "hi")
+    store.record_learning_event(
+        feedback="positive",
+        deltas={"dominance": 0.3, "teasing": 0.1},
+        rationale="liked stronger tone",
+    )
 
     loaded = store.load_persona()
     assert loaded.name == "Nova"
@@ -22,6 +27,11 @@ def test_store_round_trip(tmp_path) -> None:
         ("user", "hello"),
         ("assistant", "hi"),
     ]
+
+    events = store.list_learning_events()
+    assert len(events) == 1
+    assert events[0]["feedback"] == "positive"
+    assert events[0]["deltas"] == {"dominance": 0.3, "teasing": 0.1}
 
     store.clear_messages()
     assert store.list_messages() == []
