@@ -18,6 +18,7 @@ def build_visual_prompt(
     """
 
     tags = [tag.strip() for tag in preference_tags if tag.strip()]
+    wardrobe = ", ".join(item.strip() for item in intent.wardrobe if item.strip())
     style = (
         "cinematic adult fetish-inspired portrait, mature adult subject, dramatic lighting, "
         "high detail, coherent anatomy, expressive pose, tasteful sensual atmosphere"
@@ -34,10 +35,11 @@ def build_visual_prompt(
         if intent.continuity_key
         else ""
     )
+    wardrobe_text = f", wardrobe: {wardrobe}" if wardrobe else ""
     positive = (
-        f"{style}, mood: {intent.mood}, theme: {intent.theme or 'private adult scene'}, "
-        f"intensity {intent.intensity:.2f}, {personality}, user style preferences: {tag_text}"
-        f"{continuity}"
+        f"{style}, visual style: {intent.visual_style or 'cinematic'}, mood: {intent.mood}, "
+        f"theme: {intent.theme or 'private adult scene'}, intensity {intent.intensity:.2f}, "
+        f"{personality}, user style preferences: {tag_text}{wardrobe_text}{continuity}"
     )
 
     # Keep the visual generator in a clearly adult, non-explicit lane and avoid
