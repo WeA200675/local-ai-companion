@@ -15,6 +15,10 @@ class AppSettings(BaseModel):
 
     model_name: str = "qwen2.5:7b"
     model_url: str = "http://127.0.0.1:11434"
+    chat_temperature: float = Field(default=0.85, ge=0.0, le=2.0)
+    chat_history_messages: int = Field(default=60, ge=10, le=500)
+    chat_num_ctx: int = Field(default=0, ge=0, le=262144)
+    chat_num_predict: int = Field(default=0, ge=0, le=32768)
     media_enabled: bool = False
     media_url: str = "http://127.0.0.1:8188"
     media_workflow: str = ""
@@ -59,6 +63,10 @@ class AppSettings(BaseModel):
         return cls(
             model_name=os.getenv("LOCAL_AI_MODEL", "qwen2.5:7b"),
             model_url=os.getenv("LOCAL_AI_URL", "http://127.0.0.1:11434"),
+            chat_temperature=float(os.getenv("LOCAL_CHAT_TEMPERATURE", "0.85")),
+            chat_history_messages=int(os.getenv("LOCAL_CHAT_HISTORY_MESSAGES", "60")),
+            chat_num_ctx=int(os.getenv("LOCAL_CHAT_NUM_CTX", "0")),
+            chat_num_predict=int(os.getenv("LOCAL_CHAT_NUM_PREDICT", "0")),
             media_enabled=media_enabled,
             media_url=os.getenv("LOCAL_MEDIA_URL", "http://127.0.0.1:8188"),
             media_workflow=workflow,
