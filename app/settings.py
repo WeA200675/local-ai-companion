@@ -22,6 +22,7 @@ class AppSettings(BaseModel):
     media_enabled: bool = False
     media_url: str = "http://127.0.0.1:8188"
     media_workflow: str = ""
+    media_profile_catalog: str = ""
     media_positive_node: str = "6"
     media_negative_node: str = "7"
     media_seed_node: str = "3"
@@ -50,6 +51,7 @@ class AppSettings(BaseModel):
         "media_seed_node",
         "media_output_dir",
         "media_workflow",
+        "media_profile_catalog",
         "media_reference_node",
         "media_reference_input_key",
         mode="before",
@@ -61,8 +63,9 @@ class AppSettings(BaseModel):
     @classmethod
     def from_env(cls) -> "AppSettings":
         workflow = os.getenv("LOCAL_MEDIA_WORKFLOW", "").strip()
+        profile_catalog = os.getenv("LOCAL_MEDIA_PROFILE_CATALOG", "").strip()
         media_enabled_raw = os.getenv("LOCAL_MEDIA_ENABLED")
-        media_enabled = bool(workflow)
+        media_enabled = bool(workflow or profile_catalog)
         if media_enabled_raw is not None:
             media_enabled = media_enabled_raw.strip().lower() in {"1", "true", "yes", "on"}
         return cls(
@@ -75,6 +78,7 @@ class AppSettings(BaseModel):
             media_enabled=media_enabled,
             media_url=os.getenv("LOCAL_MEDIA_URL", "http://127.0.0.1:8188"),
             media_workflow=workflow,
+            media_profile_catalog=profile_catalog,
             media_positive_node=os.getenv("LOCAL_MEDIA_POSITIVE_NODE", "6"),
             media_negative_node=os.getenv("LOCAL_MEDIA_NEGATIVE_NODE", "7"),
             media_seed_node=os.getenv("LOCAL_MEDIA_SEED_NODE", "3"),
@@ -96,6 +100,10 @@ class AppSettings(BaseModel):
     @property
     def workflow_path(self) -> Path | None:
         return Path(self.media_workflow).expanduser() if self.media_workflow else None
+
+    @property
+    def profile_catalog_path(self) -> Path | None:
+        return Path(self.media_profile_catalog).expanduser() if self.media_profile_catalog else None
 
     @property
     def output_path(self) -> Path:
