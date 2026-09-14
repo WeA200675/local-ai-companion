@@ -4,9 +4,12 @@ from math import ceil
 
 from pydantic import BaseModel, Field
 
+from app.ai.look_presets import LookPreset
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
+from app.ai.scene_mixer import SceneMix
 from app.ai.scene_presets import ScenePreset
+from app.ai.session_arcs import ActiveArc
 from app.ai.session_modes import SessionMode, TRAIT_NAMES
 from app.ai.variety import VarietyCard
 from app.memory.conversations import ConversationRepository
@@ -35,6 +38,13 @@ class ContextSnapshot(BaseModel):
     scene_context: str
     variety_name: str | None = None
     variety_context: str = ""
+    look_name: str | None = None
+    look_context: str = ""
+    arc_name: str | None = None
+    arc_stage: str | None = None
+    arc_context: str = ""
+    scene_mix_name: str | None = None
+    scene_mix_context: str = ""
     effective_tags: list[str]
     core_memory: list[str]
     adaptive_memory: list[str]
@@ -75,6 +85,9 @@ def build_context_snapshot(
     session_mode: SessionMode | None = None,
     scene_preset: ScenePreset | None = None,
     variety_card: VarietyCard | None = None,
+    look_preset: LookPreset | None = None,
+    active_arc: ActiveArc | None = None,
+    scene_mix: SceneMix | None = None,
     conversations: ConversationRepository | None = None,
 ) -> ContextSnapshot:
     """Build the same high-level context layers used for a new local chat request.
@@ -93,6 +106,12 @@ def build_context_snapshot(
         tags.extend(scene_preset.style_tags)
     if variety_card is not None:
         tags.extend(variety_card.style_tags)
+    if look_preset is not None:
+        tags.extend(look_preset.style_tags)
+    if active_arc is not None:
+        tags.extend(active_arc.style_tags)
+    if scene_mix is not None:
+        tags.extend(scene_mix.style_tags)
     effective_tags = _dedupe_tags(tags)
 
     scene_context = ""
@@ -102,6 +121,10 @@ def build_context_snapshot(
     variety_context = ""
     if variety_card is not None:
         variety_context = f"{variety_card.name}: {variety_card.instruction}"
+
+    look_context = look_preset.prompt_text() if look_preset is not None else ""
+    arc_context = active_arc.prompt_text() if active_arc is not None else ""
+    scene_mix_context = scene_mix.prompt_text() if scene_mix is not None else ""
 
     core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
     adaptive_memory = (
@@ -117,6 +140,9 @@ def build_context_snapshot(
         core_memory,
         scene_context,
         variety_context,
+        look_context,
+        arc_context,
+        scene_mix_context,
     )
 
     conversation_id: str | None = None
@@ -135,7 +161,7 @@ def build_context_snapshot(
     history: list[ContextHistoryItem] = []
     history_tokens = 0
     for message in messages:
-        tokens = approximate_tokens(message.content) + 4  # rough per-message framing overhead
+        tokens = approximate_tokens(message.content) + 4
         history_tokens += tokens
         preview = " ".join(message.content.split())
         if len(preview) > 180:
@@ -170,13 +196,9 @@ def build_context_snapshot(
                 "Eingabekontext plus Antwortbudget überschreiten voraussichtlich das konfigurierte Kontextfenster."
             )
 
-    base_traits = {
-        name: float(getattr(persona, name).current)
-        for name in TRAIT_NAMES
-    }
+    base_traits = {name: float(getattr(persona, name).current) for name in TRAIT_NAMES}
     effective_traits = {
-        name: float(getattr(effective_persona, name).current)
-        for name in TRAIT_NAMES
+        name: float(getattr(effective_persona, name).current) for name in TRAIT_NAMES
     }
     locked_traits = [name for name in TRAIT_NAMES if bool(getattr(persona, name).locked)]
 
@@ -194,6 +216,13 @@ def build_context_snapshot(
         scene_context=scene_context,
         variety_name=variety_card.name if variety_card is not None else None,
         variety_context=variety_context,
+        look_name=look_preset.name if look_preset is not None else None,
+        look_context=look_context,
+        arc_name=active_arc.arc_name if active_arc is not None else None,
+        arc_stage=active_arc.stage_name if active_arc is not None else None,
+        arc_context=arc_context,
+        scene_mix_name=scene_mix.title if scene_mix is not None else None,
+        scene_mix_context=scene_mix_context,
         effective_tags=effective_tags,
         core_memory=core_memory,
         adaptive_memory=adaptive_memory,

@@ -82,6 +82,9 @@ class ContextInspectorWidget(QWidget):
             session_mode=self.chat.session_mode,
             scene_preset=self.chat.scene_preset,
             variety_card=self.chat.variety_card,
+            look_preset=self.chat.look_preset,
+            active_arc=self.chat.active_arc,
+            scene_mix=self.chat.scene_mix,
             conversations=self.chat.conversations,
         )
         self._render(snapshot)
@@ -114,6 +117,10 @@ class ContextInspectorWidget(QWidget):
             f"Session-Modus: {snapshot.session_mode or 'Basis'}",
             f"Szene: {snapshot.scene_name or 'Basis'}",
             f"Impuls-Deck: {snapshot.variety_name or 'Basis'}",
+            f"Look-Preset: {snapshot.look_name or 'Basis'}",
+            f"Session-Arc: {snapshot.arc_name or 'aus'}"
+            + (f" · {snapshot.arc_stage}" if snapshot.arc_stage else ""),
+            f"Scene Mixer: {snapshot.scene_mix_name or 'aus'}",
             f"Aktive Stil-/Präferenz-Tags: {', '.join(snapshot.effective_tags) or 'keine'}",
             "",
             "Persona — Basis → effektiv:",
@@ -139,6 +146,12 @@ class ContextInspectorWidget(QWidget):
             lines.extend(["", "Temporärer Szenenkontext:", f"  {snapshot.scene_context}"])
         if snapshot.variety_context:
             lines.extend(["", "Temporärer Abwechslungs-Impuls:", f"  {snapshot.variety_context}"])
+        if snapshot.look_context:
+            lines.extend(["", "Temporärer Look:", f"  {snapshot.look_context}"])
+        if snapshot.arc_context:
+            lines.extend(["", "Aktuelle Arc-Phase:", f"  {snapshot.arc_context}"])
+        if snapshot.scene_mix_context:
+            lines.extend(["", "Scene-Mixer-Layer:", f"  {snapshot.scene_mix_context}"])
         if snapshot.warnings:
             lines.extend(["", "Hinweise:", *[f"  ⚠ {item}" for item in snapshot.warnings]])
 

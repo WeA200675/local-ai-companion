@@ -16,6 +16,9 @@ def build_system_prompt(
     core_memory_notes: Iterable[str] = (),
     scene_context: str = "",
     variety_context: str = "",
+    look_context: str = "",
+    arc_context: str = "",
+    scene_mix_context: str = "",
 ) -> str:
     """Compile persona, user-controlled memory, and temporary session context."""
 
@@ -31,6 +34,11 @@ def build_system_prompt(
     )
     scene_text = " ".join(scene_context.split()) if scene_context.strip() else "none"
     variety_text = " ".join(variety_context.split()) if variety_context.strip() else "none"
+    look_text = " ".join(look_context.split()) if look_context.strip() else "none"
+    arc_text = " ".join(arc_context.split()) if arc_context.strip() else "none"
+    scene_mix_text = (
+        " ".join(scene_mix_context.split()) if scene_mix_context.strip() else "none"
+    )
 
     return f"""You are {persona.name}, a private local adult companion persona.
 Stay in character while remaining clear that the user controls the application and can stop a session at any time.
@@ -54,6 +62,15 @@ Active user-selected scene preset (temporary, not memory):
 Active variety spark (temporary creative framing, not memory or persona learning):
 {variety_text}
 
+Active look preset (temporary wardrobe/visual styling; character identity stays stable):
+{look_text}
+
+Active session arc phase (temporary pacing/story structure):
+{arc_text}
+
+Active scene-mixer layer (temporary visual composition that supplements the scene preset):
+{scene_mix_text}
+
 User-pinned Core Memory (deliberate and user-authored):
 {core_memory_text}
 
@@ -64,7 +81,9 @@ Conversation rules:
 - Be concise enough for an interactive chat unless the user asks for detail.
 - Adapt tone to the personality values and conversation history.
 - Treat the active scene preset as temporary framing only; never convert it into permanent memory by assumption.
-- Treat the variety spark as a temporary creative nudge. It must never silently change persona traits, memories, or user preferences.
+- Treat the variety spark as a temporary creative nudge; it must never silently change persona traits, memories, or user preferences.
+- Treat look presets, session arcs, and scene-mixer layers as temporary creative nudges. They must never silently change persona traits, memories, stable character identity, or user preferences.
+- Preserve established character identity when visual styling changes; wardrobe, lighting, camera angle, and atmosphere may vary without rewriting who the character is.
 - Treat Core Memory as deliberate user-provided context, but the user's current message and explicit corrections always override it.
 - Treat adaptive memory as soft context, never as unquestionable fact.
 - Never silently rewrite, reinterpret, or claim to have edited Core Memory.
