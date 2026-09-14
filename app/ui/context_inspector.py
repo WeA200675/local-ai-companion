@@ -97,6 +97,7 @@ class ContextInspectorWidget(QWidget):
             look_preset=self.chat.look_preset,
             active_arc=self.chat.active_arc,
             scene_mix=self.chat.scene_mix,
+            visual_motif=self.chat.visual_motif,
             conversations=self.chat.conversations,
             director_config=director_config,
             scene_mix_locks=scene_locks,
@@ -140,6 +141,7 @@ class ContextInspectorWidget(QWidget):
             f"Look-Preset: {snapshot.look_name or 'Basis'}",
             f"Session-Arc: {snapshot.arc_name or 'aus'}"
             + (f" · {snapshot.arc_stage}" if snapshot.arc_stage else ""),
+            f"Visual-Motiv: {snapshot.visual_motif_name or 'Basis'}",
             f"Scene Mixer: {snapshot.scene_mix_name or 'aus'}",
             f"Kreative Regie: {director}",
             f"Regie-Sperren: {', '.join(snapshot.director_locks) or 'keine'}",
@@ -173,6 +175,8 @@ class ContextInspectorWidget(QWidget):
             lines.extend(["", "Temporärer Look:", f"  {snapshot.look_context}"])
         if snapshot.arc_context:
             lines.extend(["", "Aktuelle Arc-Phase:", f"  {snapshot.arc_context}"])
+        if snapshot.visual_motif_context:
+            lines.extend(["", "Aktuelles Visual-Motiv:", f"  {snapshot.visual_motif_context}"])
         if snapshot.scene_mix_context:
             lines.extend(["", "Scene-Mixer-Layer:", f"  {snapshot.scene_mix_context}"])
         if snapshot.warnings:
