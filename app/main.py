@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
             persona=self.persona,
             preference_tags=preference_tags,
             media_service=self.media_service,
+            on_persona_changed=self._persona_changed,
         )
         self.persona_lab = PersonaLab(
             store=self.store,
@@ -65,6 +66,8 @@ class MainWindow(QMainWindow):
     def _persona_changed(self, persona: PersonaState) -> None:
         self.persona = persona
         self.chat.persona = persona
+        if hasattr(self, "persona_lab"):
+            self.persona_lab.set_persona(persona)
 
     def _preference_tags_changed(self, tags: list[str]) -> None:
         self.chat.preference_tags = tags
