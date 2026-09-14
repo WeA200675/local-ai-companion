@@ -83,6 +83,15 @@ class StateStore:
                 return PersonaState()
             return PersonaState.model_validate_json(row.value_json)
 
+    def snapshot_persona(self, persona: PersonaState, *, kind: str) -> int:
+        """Write an immutable persona snapshot and return its id."""
+
+        from app.memory.snapshots import SnapshotStore
+
+        with self._session_factory() as session:
+            snapshot = SnapshotStore(session).save(persona, kind=kind)
+            return snapshot.id
+
     def save_preference_tags(self, tags: Iterable[str]) -> None:
         normalized = sorted({tag.strip() for tag in tags if tag.strip()})
         payload = json.dumps(normalized, ensure_ascii=False)
