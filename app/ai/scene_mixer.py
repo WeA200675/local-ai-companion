@@ -20,6 +20,7 @@ class SceneMix(BaseModel):
     context: str
     style_tags: list[str] = Field(default_factory=list)
     components: dict[str, str] = Field(default_factory=dict)
+    component_ids: dict[str, str] = Field(default_factory=dict)
 
     def prompt_text(self) -> str:
         return f"{self.title}: {self.context}"
@@ -27,6 +28,7 @@ class SceneMix(BaseModel):
 
 class SceneMixerState(BaseModel):
     active_by_conversation: dict[str, SceneMix] = Field(default_factory=dict)
+    locked_dimensions_by_conversation: dict[str, list[str]] = Field(default_factory=dict)
     recent_signatures: list[str] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
 
@@ -163,6 +165,14 @@ ATMOSPHERES = [
     ),
 ]
 
+_COMPONENTS = {
+    "setting": SETTINGS,
+    "lighting": LIGHTING,
+    "composition": COMPOSITIONS,
+    "atmosphere": ATMOSPHERES,
+}
+_VALID_DIMENSIONS = tuple(_COMPONENTS)
+
 
 class SceneMixerRepository:
     STATE_KEY = "scene_mixer"
@@ -175,9 +185,16 @@ class SceneMixerRepository:
         if payload is None:
             return SceneMixerState()
         try:
-            return SceneMixerState.model_validate_json(payload)
+            state = SceneMixerState.model_validate_json(payload)
         except ValueError:
             return SceneMixerState()
+        state.locked_dimensions_by_conversation = {
+            conversation_id: [
+                dimension for dimension in dimensions if dimension in _VALID_DIMENSIONS
+            ]
+            for conversation_id, dimensions in state.locked_dimensions_by_conversation.items()
+        }
+        return state
 
     def save(self, state: SceneMixerState) -> None:
         self.store._save_app_state(self.STATE_KEY, state.model_dump_json())  # noqa: SLF001
@@ -185,6 +202,28 @@ class SceneMixerRepository:
     def active(self, conversation_id: str) -> SceneMix | None:
         mix = self.load().active_by_conversation.get(conversation_id)
         return mix.model_copy(deep=True) if mix is not None else None
+
+    def locked_dimensions(self, conversation_id: str) -> set[str]:
+        state = self.load()
+        return set(state.locked_dimensions_by_conversation.get(conversation_id, []))
+
+    def set_dimension_locked(self, conversation_id: str, dimension: str, locked: bool) -> None:
+        if dimension not in _VALID_DIMENSIONS:
+            raise ValueError(f"Unsupported scene-mixer dimension: {dimension}")
+        state = self.load()
+        values = set(state.locked_dimensions_by_conversation.get(conversation_id, []))
+        if locked:
+            values.add(dimension)
+        else:
+            values.discard(dimension)
+        if values:
+            state.locked_dimensions_by_conversation[conversation_id] = [
+                name for name in _VALID_DIMENSIONS if name in values
+            ]
+        else:
+            state.locked_dimensions_by_conversation.pop(conversation_id, None)
+        state.revision += 1
+        self.save(state)
 
     @staticmethod
     def _build_mix(parts: dict[str, MixComponent]) -> SceneMix:
@@ -205,7 +244,32 @@ class SceneMixerRepository:
             context=context,
             style_tags=tags,
             components={key: value.label for key, value in parts.items()},
+            component_ids={key: value.id for key, value in parts.items()},
         )
+
+    @staticmethod
+    def _component_by_id(dimension: str, component_id: str) -> MixComponent | None:
+        return next(
+            (item for item in _COMPONENTS[dimension] if item.id == component_id),
+            None,
+        )
+
+    def _locked_parts(
+        self,
+        active: SceneMix | None,
+        locked_dimensions: set[str],
+    ) -> dict[str, MixComponent]:
+        if active is None:
+            return {}
+        parts: dict[str, MixComponent] = {}
+        for dimension in locked_dimensions:
+            component_id = active.component_ids.get(dimension)
+            if not component_id:
+                continue
+            component = self._component_by_id(dimension, component_id)
+            if component is not None:
+                parts[dimension] = component
+        return parts
 
     def draw(
         self,
@@ -216,13 +280,18 @@ class SceneMixerRepository:
         chooser = rng or random.SystemRandom()
         state = self.load()
         recent = set(state.recent_signatures[-6:])
+        locked_dimensions = set(
+            state.locked_dimensions_by_conversation.get(conversation_id, [])
+        )
+        fixed = self._locked_parts(
+            state.active_by_conversation.get(conversation_id),
+            locked_dimensions,
+        )
         selected: SceneMix | None = None
         for _attempt in range(12):
             parts = {
-                "setting": chooser.choice(SETTINGS),
-                "lighting": chooser.choice(LIGHTING),
-                "composition": chooser.choice(COMPOSITIONS),
-                "atmosphere": chooser.choice(ATMOSPHERES),
+                dimension: fixed.get(dimension) or chooser.choice(options)
+                for dimension, options in _COMPONENTS.items()
             }
             candidate = self._build_mix(parts)
             selected = candidate
