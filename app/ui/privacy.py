@@ -50,7 +50,7 @@ class PrivacyLockScreen(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addStretch(2)
-        layout.addWidget(title, alignment=None)
+        layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addSpacing(18)
         layout.addLayout(form)
