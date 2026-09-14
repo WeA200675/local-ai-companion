@@ -69,6 +69,12 @@ class SettingsWidget(QWidget):
         self.continuity_key = QLineEdit(settings.continuity_key)
         self.learning_snapshots = QCheckBox("Vor/nach Lernschritten automatisch Snapshots anlegen")
         self.learning_snapshots.setChecked(settings.learning_snapshots)
+        self.adaptive_memory_enabled = QCheckBox("Lokales adaptives Langzeit-Memory aktivieren")
+        self.adaptive_memory_enabled.setChecked(settings.adaptive_memory_enabled)
+        self.adaptive_memory_interval = QSpinBox()
+        self.adaptive_memory_interval.setRange(1, 20)
+        self.adaptive_memory_interval.setSuffix(" Antworten")
+        self.adaptive_memory_interval.setValue(settings.adaptive_memory_interval)
         self.history_limit = QSpinBox()
         self.history_limit.setRange(10, 5000)
         self.history_limit.setValue(settings.media_history_limit)
@@ -102,6 +108,8 @@ class SettingsWidget(QWidget):
         form.addRow("Character-Continuity", self.continuity_enabled)
         form.addRow("Continuity-Key", self.continuity_key)
         form.addRow("Lern-Snapshots", self.learning_snapshots)
+        form.addRow("Adaptives Memory", self.adaptive_memory_enabled)
+        form.addRow("Memory-Prüfung alle", self.adaptive_memory_interval)
         form.addRow("Medienhistorie max.", self.history_limit)
 
         self.preference_summary = QLabel()
@@ -109,7 +117,7 @@ class SettingsWidget(QWidget):
         self._refresh_preference_summary()
 
         self.status = QLabel(
-            "Alle Einstellungen werden nur lokal in data/companion.sqlite3 gespeichert."
+            "Alle Einstellungen, Memory-Einträge und Lernzustände werden nur lokal gespeichert."
         )
         self.status.setWordWrap(True)
         self.diagnostics_output = QPlainTextEdit()
@@ -173,6 +181,8 @@ class SettingsWidget(QWidget):
             continuity_enabled=self.continuity_enabled.isChecked(),
             continuity_key=self.continuity_key.text(),
             learning_snapshots=self.learning_snapshots.isChecked(),
+            adaptive_memory_enabled=self.adaptive_memory_enabled.isChecked(),
+            adaptive_memory_interval=self.adaptive_memory_interval.value(),
             media_history_limit=self.history_limit.value(),
         )
 
