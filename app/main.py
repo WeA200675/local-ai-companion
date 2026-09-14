@@ -15,10 +15,11 @@ from app.memory.store import StateStore
 from app.settings import AppSettings
 from app.ui.backup import BackupWidget
 from app.ui.character_studio import CharacterStudio
-from app.ui.chat import ChatWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
+from app.ui.mode_chat import ModeAwareChatWidget
 from app.ui.persona_lab import PersonaLab
+from app.ui.session_modes import SessionModesWidget
 from app.ui.settings import SettingsWidget
 
 
@@ -36,8 +37,9 @@ class MainWindow(QMainWindow):
         self.settings = self.store.load_settings(AppSettings.from_env())
 
         self.model, self.media_service = self._build_services(self.settings)
+        self.session_modes = SessionModesWidget(self.store)
 
-        self.chat = ChatWidget(
+        self.chat = ModeAwareChatWidget(
             store=self.store,
             model=self.model,
             persona=self.persona,
@@ -45,6 +47,7 @@ class MainWindow(QMainWindow):
             media_service=self.media_service,
             settings=self.settings,
             on_persona_changed=self._persona_changed,
+            session_mode=self.session_modes.active_mode(),
         )
         self.persona_lab = PersonaLab(
             store=self.store,
@@ -66,6 +69,7 @@ class MainWindow(QMainWindow):
 
         self.persona_lab.persona_changed.connect(self._persona_changed)
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
+        self.session_modes.active_mode_changed.connect(self.chat.set_session_mode)
         self.chat.memory_changed.connect(self.memory_lab.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
         self.chat.media_history_changed.connect(self.character_studio.load_profile)
@@ -79,6 +83,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self.chat, "Chat")
+        tabs.addTab(self.session_modes, "Session-Modi")
         tabs.addTab(self.persona_lab, "Persona Lab")
         tabs.addTab(self.memory_lab, "Memory")
         tabs.addTab(self.character_studio, "Character Studio")
