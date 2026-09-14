@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "policy": "docs/OPEN_SOURCE_POLICY.md",
+  "python": {
+    "setuptools": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "build"
+    },
+    "wheel": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "build"
+    },
+    "pydantic": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "runtime"
+    },
+    "sqlalchemy": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "runtime"
+    },
+    "httpx": {
+      "license": "BSD-3-Clause",
+      "open_source": true,
+      "role": "runtime"
+    },
+    "cryptography": {
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "open_source": true,
+      "role": "runtime"
+    },
+    "pyside6": {
+      "license": "LGPL-3.0-only OR GPL-3.0-only",
+      "open_source": true,
+      "role": "runtime"
+    },
+    "pytest": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "development"
+    },
+    "pytest-cov": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "development"
+    },
+    "ruff": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "development"
+    }
+  },
+  "external": {
+    "ollama": {
+      "license": "MIT",
+      "open_source": true,
+      "role": "local model runtime",
+      "source": "https://github.com/ollama/ollama"
+    },
+    "comfyui": {
+      "license": "GPL-3.0-only",
+      "open_source": true,
+      "role": "local media runtime",
+      "source": "https://github.com/Comfy-Org/ComfyUI"
+    },
+    "qwen2.5:7b": {
+      "license": "Apache-2.0",
+      "open_source": true,
+      "role": "default local language model",
+      "source": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct"
+    }
+  }
+}

@@ -20,9 +20,25 @@ Before adding a required dependency:
 
 The current Python application dependencies are intentionally from open-source projects. The backup encryption layer uses the open-source `cryptography` package rather than a proprietary security SDK.
 
+## Enforced component registry
+
+`oss_components.json` is the machine-readable registry for every direct Python/build/development dependency and the default external local stack. Each registered component records its license identifier, role, and explicit `open_source` status.
+
+Run the deterministic local audit with:
+
+```bash
+python -m app.oss_audit
+```
+
+The test suite also runs the same policy checks. CI fails when a new direct dependency is added to `pyproject.toml` without a corresponding registry entry, when a required default external component is missing, when a component is not explicitly marked open source, or when its license field contains an unacceptable placeholder such as `proprietary` or `unknown`.
+
+The registry is deliberately reviewable rather than performing a hidden network license lookup. Updating the registry is therefore an explicit code-review event instead of silently trusting third-party package metadata.
+
 ## Models and media components
 
 Model weights require the same care as application code. "Open weights" is not automatically the same thing as open source. Bundled defaults, documentation recommendations, and release presets should only point to model artifacts whose license permits the intended local use and redistribution. The exact license of a downloaded Ollama model/checkpoint/LoRA must be checked independently because users can install arbitrary third-party artifacts.
+
+The default local text stack is registered alongside Ollama and ComfyUI. User-installed models, checkpoints, LoRAs, and ComfyUI custom nodes are not automatically trusted as open source merely because they run locally; their licenses remain separate artifacts that should be reviewed before being bundled or recommended.
 
 ComfyUI workflows are user-owned local configuration. A workflow may reference third-party checkpoints or custom nodes; those artifacts remain subject to their own licenses. The app should never claim that an arbitrary user-supplied model or node is open source merely because it runs locally.
 
