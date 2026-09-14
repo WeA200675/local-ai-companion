@@ -7,6 +7,7 @@ import tempfile
 
 import httpx
 
+from app.media.profiles import WorkflowProfile, load_workflow_catalog
 from app.settings import AppSettings
 
 
@@ -50,20 +51,82 @@ def _check_model(settings: AppSettings, timeout: float) -> DiagnosticResult:
     )
 
 
-def _check_workflow(settings: AppSettings) -> DiagnosticResult:
-    if not settings.media_enabled:
-        return DiagnosticResult("ComfyUI-Workflow", True, "Mediengenerierung ist deaktiviert")
-    path = settings.workflow_path
-    if path is None:
-        return DiagnosticResult("ComfyUI-Workflow", False, "Kein API-Workflow konfiguriert")
+def _load_json_object(path: Path) -> tuple[dict[str, object] | None, str | None]:
     if not path.exists():
-        return DiagnosticResult("ComfyUI-Workflow", False, f"Datei fehlt: {path}")
+        return None, f"Datei fehlt: {path}"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return DiagnosticResult("ComfyUI-Workflow", False, f"JSON konnte nicht gelesen werden: {exc}")
+        return None, f"JSON konnte nicht gelesen werden: {exc}"
     if not isinstance(payload, dict):
-        return DiagnosticResult("ComfyUI-Workflow", False, "Workflow ist kein JSON-Objekt")
+        return None, "Workflow ist kein JSON-Objekt"
+    return payload, None
+
+
+def _validate_profile(profile: WorkflowProfile) -> str | None:
+    payload, error = _load_json_object(profile.workflow_path)
+    if error is not None or payload is None:
+        return f"{profile.id}: {error}"
+
+    missing = [
+        node
+        for node in (profile.positive_node, profile.negative_node, profile.seed_node)
+        if node not in payload
+    ]
+    if missing:
+        return f"{profile.id}: Node-IDs fehlen: {', '.join(missing)}"
+
+    if profile.reference_configured:
+        node = payload.get(profile.reference_node)
+        if not isinstance(node, dict):
+            return f"{profile.id}: Referenzbild-Node fehlt: {profile.reference_node}"
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict) or profile.reference_input_key not in inputs:
+            return (
+                f"{profile.id}: Referenzbild-Node {profile.reference_node} hat keinen "
+                f"Input {profile.reference_input_key!r}"
+            )
+    return None
+
+
+def _check_profile_catalog(settings: AppSettings) -> DiagnosticResult | None:
+    path = settings.profile_catalog_path
+    if path is None:
+        return None
+    if not path.exists():
+        return DiagnosticResult("Workflow-Profile", False, f"Katalog fehlt: {path}")
+    try:
+        catalog = load_workflow_catalog(path)
+    except (OSError, ValueError) as exc:
+        return DiagnosticResult("Workflow-Profile", False, f"Katalog ungültig: {exc}")
+
+    enabled = [profile for profile in catalog.profiles if profile.enabled]
+    if not enabled:
+        return DiagnosticResult("Workflow-Profile", False, "Katalog enthält keine aktiven Profile")
+    ids = [profile.id for profile in enabled]
+    if len(ids) != len(set(ids)):
+        return DiagnosticResult("Workflow-Profile", False, "Profil-IDs müssen eindeutig sein")
+
+    errors = [error for profile in enabled if (error := _validate_profile(profile))]
+    if errors:
+        return DiagnosticResult("Workflow-Profile", False, "; ".join(errors[:4]))
+
+    capabilities = sorted({kind for profile in enabled for kind in profile.kinds})
+    return DiagnosticResult(
+        "Workflow-Profile",
+        True,
+        f"{len(enabled)} Profil(e) bereit: {', '.join(capabilities)}",
+    )
+
+
+def _check_legacy_workflow(settings: AppSettings) -> DiagnosticResult:
+    path = settings.workflow_path
+    if path is None:
+        return DiagnosticResult("ComfyUI-Workflow", False, "Kein API-Workflow konfiguriert")
+    payload, error = _load_json_object(path)
+    if error is not None or payload is None:
+        return DiagnosticResult("ComfyUI-Workflow", False, error or "Workflow ungültig")
+
     missing = [
         node
         for node in (
@@ -105,6 +168,15 @@ def _check_workflow(settings: AppSettings) -> DiagnosticResult:
             )
 
     return DiagnosticResult("ComfyUI-Workflow", True, f"Workflow geladen: {path.name}")
+
+
+def _check_workflow(settings: AppSettings) -> DiagnosticResult:
+    if not settings.media_enabled:
+        return DiagnosticResult("ComfyUI-Workflow", True, "Mediengenerierung ist deaktiviert")
+    profile_result = _check_profile_catalog(settings)
+    if profile_result is not None:
+        return profile_result
+    return _check_legacy_workflow(settings)
 
 
 def _check_comfyui(settings: AppSettings, timeout: float) -> DiagnosticResult:
