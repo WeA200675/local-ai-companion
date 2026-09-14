@@ -18,7 +18,9 @@ from PySide6.QtWidgets import (
 from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
+from app.media.service import MediaService
 from app.memory.store import StateStore
+from app.ui.media_preview import MediaPreview
 
 
 class ModelWorker(QThread):
@@ -49,6 +51,54 @@ class ModelWorker(QThread):
         self.completed.emit(reply)
 
 
+class MediaWorker(QThread):
+    generated = Signal(str, str)
+    skipped = Signal()
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        service: MediaService,
+        *,
+        user_text: str,
+        assistant_text: str,
+        persona: PersonaState,
+        preference_tags: list[str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._service = service
+        self._user_text = user_text
+        self._assistant_text = assistant_text
+        self._persona = persona.model_copy(deep=True)
+        self._preference_tags = list(preference_tags)
+
+    def run(self) -> None:
+        try:
+            result = self._service.generate_for_exchange(
+                user_text=self._user_text,
+                assistant_text=self._assistant_text,
+                persona=self._persona,
+                preference_tags=self._preference_tags,
+            )
+        except Exception as exc:  # media must never take the chat down
+            self.failed.emit(str(exc))
+            return
+        if result is None:
+            self.skipped.emit()
+            return
+        description = " · ".join(
+            part
+            for part in (
+                result.intent.mood.strip(),
+                result.intent.theme.strip(),
+                result.intent.visual_style.strip(),
+            )
+            if part
+        )
+        self.generated.emit(str(result.path), description)
+
+
 class ChatWidget(QWidget):
     def __init__(
         self,
@@ -56,6 +106,7 @@ class ChatWidget(QWidget):
         model: OllamaClient,
         persona: PersonaState,
         preference_tags: list[str] | None = None,
+        media_service: MediaService | None = None,
         on_persona_changed: Callable[[PersonaState], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -64,14 +115,20 @@ class ChatWidget(QWidget):
         self.model = model
         self.persona = persona
         self.preference_tags = preference_tags or []
+        self.media_service = media_service
         self.on_persona_changed = on_persona_changed
         self._worker: ModelWorker | None = None
+        self._media_worker: MediaWorker | None = None
+        self._pending_user_text = ""
 
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText("Schreib deiner lokalen KI …")
         self.input.setMaximumHeight(120)
+
+        self.media_preview = MediaPreview()
+        self.media_preview.setVisible(bool(self.media_service and self.media_service.enabled))
 
         self.send_button = QPushButton("Senden")
         self.clear_button = QPushButton("Chat leeren")
@@ -84,6 +141,7 @@ class ChatWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.transcript, 1)
+        layout.addWidget(self.media_preview)
         layout.addWidget(self.input)
         layout.addLayout(button_row)
 
@@ -118,6 +176,7 @@ class ChatWidget(QWidget):
         if not text:
             return
 
+        self._pending_user_text = text
         self.input.clear()
         self.store.append_message("user", text)
         self._append_message(ChatMessage(role="user", content=text))
@@ -136,6 +195,7 @@ class ChatWidget(QWidget):
     def _model_completed(self, reply: str) -> None:
         self.store.append_message("assistant", reply)
         self._append_message(ChatMessage(role="assistant", content=reply))
+        self._start_media_generation(self._pending_user_text, reply)
 
     def _model_failed(self, error: str) -> None:
         QMessageBox.warning(
@@ -154,7 +214,51 @@ class ChatWidget(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self.send_button.setEnabled(not busy)
         self.input.setEnabled(not busy)
-        self.status.setText("KI denkt lokal …" if busy else f"Modell: {self.model.model}")
+        if busy:
+            self.status.setText("KI denkt lokal …")
+        elif self._media_worker is None or not self._media_worker.isRunning():
+            self.status.setText(f"Modell: {self.model.model}")
+
+    def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
+        if not self.media_service or not self.media_service.enabled:
+            return
+        if self._media_worker is not None and self._media_worker.isRunning():
+            return
+
+        self.media_preview.setVisible(True)
+        self.status.setText("KI plant optional ein lokales Bild …")
+        worker = MediaWorker(
+            self.media_service,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            persona=self.persona,
+            preference_tags=self.preference_tags,
+            parent=self,
+        )
+        worker.generated.connect(self._media_generated)
+        worker.skipped.connect(self._media_skipped)
+        worker.failed.connect(self._media_failed)
+        worker.finished.connect(self._media_finished)
+        self._media_worker = worker
+        worker.start()
+
+    def _media_generated(self, path: str, description: str) -> None:
+        self.media_preview.show_media(path, description=description)
+        self.status.setText("Lokales Medium erzeugt")
+
+    def _media_skipped(self) -> None:
+        self.status.setText("Kein Bild für diese Antwort nötig")
+
+    def _media_failed(self, error: str) -> None:
+        self.status.setText(f"Medien-Backend: {error}")
+
+    def _media_finished(self) -> None:
+        worker = self._media_worker
+        self._media_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if self._worker is None or not self._worker.isRunning():
+            self.status.setText(f"Modell: {self.model.model}")
 
     def clear_chat(self) -> None:
         answer = QMessageBox.question(
