@@ -30,6 +30,18 @@ class AppStateRow(Base):
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class LearningEventRow(Base):
+    __tablename__ = "learning_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feedback: Mapped[str] = mapped_column(String(16), nullable=False)
+    deltas_json: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
 class StateStore:
     def __init__(self, session_factory: sessionmaker) -> None:
         self._session_factory = session_factory
@@ -90,3 +102,37 @@ class StateStore:
         if not isinstance(value, list):
             return []
         return [str(item) for item in value]
+
+    def record_learning_event(
+        self,
+        *,
+        feedback: str,
+        deltas: dict[str, float],
+        rationale: str,
+    ) -> None:
+        if feedback not in {"positive", "negative"}:
+            raise ValueError(f"Unsupported feedback: {feedback}")
+        with self._session_factory.begin() as session:
+            session.add(
+                LearningEventRow(
+                    feedback=feedback,
+                    deltas_json=json.dumps(deltas, ensure_ascii=False, sort_keys=True),
+                    rationale=rationale.strip(),
+                )
+            )
+
+    def list_learning_events(self, limit: int = 50) -> list[dict[str, object]]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(LearningEventRow).order_by(LearningEventRow.id.desc()).limit(limit)
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "feedback": row.feedback,
+                "deltas": json.loads(row.deltas_json),
+                "rationale": row.rationale,
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ]
