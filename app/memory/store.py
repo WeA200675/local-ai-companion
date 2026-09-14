@@ -9,7 +9,9 @@ from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from app.ai.model import ChatMessage
 from app.ai.persona import PersonaState
+from app.media.continuity import CharacterProfile
 from app.memory.database import Base
+from app.settings import AppSettings
 
 
 class ChatMessageRow(Base):
@@ -42,9 +44,27 @@ class LearningEventRow(Base):
     )
 
 
+class MediaEventRow(Base):
+    __tablename__ = "media_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    seed: Mapped[str] = mapped_column(String(32), nullable=False)
+    continuity_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    intent_json: Mapped[str] = mapped_column(Text, nullable=False)
+    feedback: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
 class StateStore:
     def __init__(self, session_factory: sessionmaker) -> None:
         self._session_factory = session_factory
+        with self._session_factory() as session:
+            Base.metadata.create_all(bind=session.get_bind())
 
     def append_message(self, role: str, content: str) -> None:
         clean = content.strip()
@@ -68,20 +88,13 @@ class StateStore:
             session.execute(delete(ChatMessageRow))
 
     def save_persona(self, persona: PersonaState) -> None:
-        payload = persona.model_dump_json()
-        with self._session_factory.begin() as session:
-            row = session.get(AppStateRow, "persona")
-            if row is None:
-                session.add(AppStateRow(key="persona", value_json=payload))
-            else:
-                row.value_json = payload
+        self._save_app_state("persona", persona.model_dump_json())
 
     def load_persona(self) -> PersonaState:
-        with self._session_factory() as session:
-            row = session.get(AppStateRow, "persona")
-            if row is None:
-                return PersonaState()
-            return PersonaState.model_validate_json(row.value_json)
+        payload = self._load_app_state("persona")
+        if payload is None:
+            return PersonaState()
+        return PersonaState.model_validate_json(payload)
 
     def snapshot_persona(self, persona: PersonaState, *, kind: str) -> int:
         """Write an immutable persona snapshot and return its id."""
@@ -94,23 +107,56 @@ class StateStore:
 
     def save_preference_tags(self, tags: Iterable[str]) -> None:
         normalized = sorted({tag.strip() for tag in tags if tag.strip()})
-        payload = json.dumps(normalized, ensure_ascii=False)
-        with self._session_factory.begin() as session:
-            row = session.get(AppStateRow, "preference_tags")
-            if row is None:
-                session.add(AppStateRow(key="preference_tags", value_json=payload))
-            else:
-                row.value_json = payload
+        self._save_app_state(
+            "preference_tags", json.dumps(normalized, ensure_ascii=False)
+        )
 
     def load_preference_tags(self) -> list[str]:
-        with self._session_factory() as session:
-            row = session.get(AppStateRow, "preference_tags")
-            if row is None:
-                return []
-            value = json.loads(row.value_json)
+        payload = self._load_app_state("preference_tags")
+        if payload is None:
+            return []
+        try:
+            value = json.loads(payload)
+        except ValueError:
+            return []
         if not isinstance(value, list):
             return []
         return [str(item) for item in value]
+
+    def save_settings(self, settings: AppSettings) -> None:
+        self._save_app_state("runtime_settings", settings.model_dump_json())
+
+    def load_settings(self, defaults: AppSettings | None = None) -> AppSettings:
+        fallback = defaults or AppSettings()
+        payload = self._load_app_state("runtime_settings")
+        if payload is None:
+            return fallback.model_copy(deep=True)
+        try:
+            return AppSettings.model_validate_json(payload)
+        except ValueError:
+            return fallback.model_copy(deep=True)
+
+    @staticmethod
+    def _character_state_key(key: str) -> str:
+        clean = key.strip() or "persona-main"
+        return f"character:{clean}"[:80]
+
+    def load_character_profile(self, key: str) -> CharacterProfile:
+        state_key = self._character_state_key(key)
+        payload = self._load_app_state(state_key)
+        if payload is not None:
+            try:
+                return CharacterProfile.model_validate_json(payload)
+            except ValueError:
+                pass
+        profile = CharacterProfile.create(key)
+        self.save_character_profile(profile)
+        return profile
+
+    def save_character_profile(self, profile: CharacterProfile) -> None:
+        self._save_app_state(
+            self._character_state_key(profile.key), profile.model_dump_json()
+        )
 
     def record_learning_event(
         self,
@@ -145,3 +191,99 @@ class StateStore:
             }
             for row in rows
         ]
+
+    def record_media_event(
+        self,
+        *,
+        path: str,
+        kind: str,
+        prompt_id: str,
+        seed: int,
+        continuity_key: str | None,
+        intent: dict[str, object],
+    ) -> int:
+        with self._session_factory.begin() as session:
+            row = MediaEventRow(
+                path=path,
+                kind=kind,
+                prompt_id=prompt_id,
+                seed=str(seed),
+                continuity_key=continuity_key,
+                intent_json=json.dumps(intent, ensure_ascii=False, sort_keys=True),
+            )
+            session.add(row)
+            session.flush()
+            return row.id
+
+    def list_media_events(self, limit: int = 200) -> list[dict[str, object]]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(MediaEventRow).order_by(MediaEventRow.id.desc()).limit(limit)
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "path": row.path,
+                "kind": row.kind,
+                "prompt_id": row.prompt_id,
+                "seed": int(row.seed),
+                "continuity_key": row.continuity_key,
+                "intent": json.loads(row.intent_json),
+                "feedback": row.feedback,
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ]
+
+    def set_media_feedback(self, media_id: int, feedback: str | None) -> None:
+        if feedback not in {None, "positive", "negative"}:
+            raise ValueError(f"Unsupported media feedback: {feedback}")
+
+        with self._session_factory.begin() as session:
+            row = session.get(MediaEventRow, media_id)
+            if row is None:
+                raise KeyError(f"Media event {media_id} not found")
+            old_feedback = row.feedback
+            row.feedback = feedback
+
+            if not row.continuity_key or old_feedback == feedback:
+                return
+
+            state_key = self._character_state_key(row.continuity_key)
+            state_row = session.get(AppStateRow, state_key)
+            if state_row is None:
+                profile = CharacterProfile.create(row.continuity_key)
+            else:
+                try:
+                    profile = CharacterProfile.model_validate_json(state_row.value_json)
+                except ValueError:
+                    profile = CharacterProfile.create(row.continuity_key)
+
+            if old_feedback == "positive":
+                profile.positive_feedback = max(0, profile.positive_feedback - 1)
+            elif old_feedback == "negative":
+                profile.negative_feedback = max(0, profile.negative_feedback - 1)
+
+            if feedback == "positive":
+                profile.positive_feedback += 1
+            elif feedback == "negative":
+                profile.negative_feedback += 1
+
+            serialized = profile.model_dump_json()
+            if state_row is None:
+                session.add(AppStateRow(key=state_key, value_json=serialized))
+            else:
+                state_row.value_json = serialized
+
+    def _save_app_state(self, key: str, value_json: str) -> None:
+        with self._session_factory.begin() as session:
+            row = session.get(AppStateRow, key)
+            if row is None:
+                session.add(AppStateRow(key=key, value_json=value_json))
+            else:
+                row.value_json = value_json
+
+    def _load_app_state(self, key: str) -> str | None:
+        with self._session_factory() as session:
+            row = session.get(AppStateRow, key)
+            return row.value_json if row is not None else None
