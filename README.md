@@ -1,40 +1,33 @@
 # Local AI Companion
 
-Private-first local desktop companion with configurable persona, controlled learning, non-destructive snapshots, persistent chat history, and a local media pipeline.
+Private-first local desktop companion with configurable persona, controlled learning, reversible long-term memory, non-destructive snapshots, persistent chat history, and a local media pipeline.
 
 ## Current v0.2.0-alpha status
 
 Implemented:
 
-- PySide6 desktop UI with Chat, Persona Lab, Media History, and Settings tabs
+- PySide6 desktop UI with Chat, Persona Lab, Memory, Media History, and Settings tabs
 - Local Ollama-compatible model adapter
 - Persistent SQLite chat history and runtime settings
 - Persona traits with user-controlled current value, min/max bounds, learning rate, and locks
-- User-configured preference tags
-- Feedback-driven persona learning with bounded trait updates
-- Automatic `pre_learning` and `learning` snapshots around feedback-driven learning
-- Persistent learning audit trail in the Persona Lab
-- Immutable persona snapshots
-- Non-destructive restore: every restore first creates a `pre_restore` snapshot
+- Feedback-driven persona learning with `pre_learning` / `learning` snapshots and an audit trail
+- Adaptive local long-term interaction memory with confidence filtering, deduplication, review, and reversible enable/disable controls
+- Immutable persona snapshots with non-destructive restore (`pre_restore` is always written first)
 - Optional ComfyUI-compatible local image/GIF/video generation backend
 - Autonomous media planning after assistant replies
 - Character/seed continuity memory for recurring generated companion visuals
-- Inline preview for generated images, GIFs, and short videos
-- Persistent local media history with per-image positive/negative feedback
-- Local visual preference learning from image feedback
-- In-app configuration for model endpoint, ComfyUI workflow, node ids, output path, continuity, and history limits
-- Local diagnostics for the Ollama endpoint, selected model, ComfyUI endpoint, workflow node ids, and media output directory
-- Automated tests for model requests, persistence, learning, snapshots, media workflow injection, settings, continuity, diagnostics, and media feedback
+- Persistent local media history with per-image feedback and reversible visual-preference learning
+- In-app configuration for local models, media workflow, continuity, learning snapshots, adaptive memory, and history limits
+- Local diagnostics for Ollama, model availability, ComfyUI, workflow node ids, and output paths
+- Automated tests across model requests, persistence, learning, adaptive memory, snapshots, media, settings, continuity, diagnostics, and feedback
 
 ## Privacy model
 
-Chats, preferences, generated media, photos, model files, logs, runtime settings, and local databases should stay on the local machine and must not be committed to the repository.
+Chats, adaptive memory, preferences, generated media, model files, logs, runtime settings, and local databases stay on the local machine by default and must not be committed to the repository.
 
-The default database is written to `data/companion.sqlite3`. Generated media defaults to `data/generated_media/`. The `data/` directory is gitignored. Ollama and ComfyUI endpoints default to loopback addresses, so the reference configuration does not require a cloud model service.
+The default database is `data/companion.sqlite3`; generated media defaults to `data/generated_media/`. The `data/` directory is gitignored. Ollama and ComfyUI default to loopback addresses.
 
 ## Quick start
-
-Create a virtual environment:
 
 ```bash
 python -m venv .venv
@@ -52,17 +45,10 @@ macOS/Linux:
 source .venv/bin/activate
 ```
 
-Install:
+Install and run:
 
 ```bash
 pip install -e ".[dev]"
-```
-
-Start your local Ollama service and make sure the configured model is available. The current first-run default is `qwen2.5:7b`.
-
-Run the app:
-
-```bash
 python -m app.main
 ```
 
@@ -74,37 +60,17 @@ pytest
 
 ## In-app settings and diagnostics
 
-The **Einstellungen** tab is the preferred way to configure the app after first launch. It stores settings locally in SQLite and can reconfigure the local backends without editing source code.
+The **Einstellungen** tab stores local runtime configuration in SQLite. It controls the language-model endpoint, ComfyUI endpoint/workflow and node ids, output path, media generation, character continuity, automatic learning snapshots, adaptive-memory enablement and analysis interval, and media-history size.
 
-Configurable values include:
+The **Lokale Verbindungen testen** button performs local-only preflight checks for the configured Ollama endpoint/model, ComfyUI workflow/node ids, ComfyUI endpoint, and output directory.
 
-- local language-model name and endpoint
-- ComfyUI endpoint and API-format workflow path
-- positive-prompt, negative-prompt, and seed node ids
-- local media output directory
-- media generation on/off
-- visual character continuity on/off and continuity key
-- automatic learning snapshots
-- media-history size
-
-The **Lokale Verbindungen testen** button performs short local-only checks. It verifies that the configured language model is visible through the local model endpoint, validates the selected ComfyUI workflow and node ids, checks the ComfyUI endpoint when media is enabled, and confirms that the media output directory is writable.
-
-Environment variables remain available as first-run defaults, for example:
-
-```powershell
-$env:LOCAL_AI_MODEL="your-model"
-$env:LOCAL_AI_URL="http://127.0.0.1:11434"
-$env:LOCAL_MEDIA_WORKFLOW="C:\AI\workflows\companion-api.json"
-python -m app.main
-```
+Environment variables remain available as first-run defaults, including `LOCAL_AI_MODEL`, `LOCAL_AI_URL`, `LOCAL_MEDIA_WORKFLOW`, `LOCAL_ADAPTIVE_MEMORY`, and `LOCAL_ADAPTIVE_MEMORY_INTERVAL`.
 
 ## Controlled persona learning
 
-Each assistant response can be rated with **Mehr davon** or **Weniger davon**. A local learning analyzer proposes bounded signals for the seven persona traits. The application then applies only the changes allowed by each trait's learning rate, lock state, and user-defined min/max bounds.
+Each assistant response can be rated with **Mehr davon** or **Weniger davon**. A local analyzer proposes bounded signals for the seven persona traits. Application-side min/max bounds, per-trait learning rates, and locks remain authoritative.
 
-The Persona Lab exposes all of those controls. Learning stays outside the underlying model weights, so changes remain visible, auditable, and reversible.
-
-When automatic learning snapshots are enabled, every feedback-driven learning step creates this history:
+When automatic learning snapshots are enabled:
 
 ```text
 current persona
@@ -116,41 +82,33 @@ apply bounded learning update
 learning snapshot
 ```
 
-That makes even small behavior changes easy to inspect and roll back later.
+Learning remains visible, auditable, and reversible rather than silently modifying model weights.
+
+## Adaptive long-term memory
+
+Adaptive memory is separate from persona traits and chat history. At a configurable interval, the local model can extract a small number of high-confidence observations that are likely to remain useful across conversations, such as communication style, explicit interaction preferences, boundaries, or recurring themes.
+
+The learner is instructed not to infer or store sensitive personal facts such as identity, exact location, health, politics/religion, finances, passwords/account data, legal/criminal history, or transient scene details. Low-confidence proposals are discarded.
+
+Accepted observations are deduplicated and stored locally with category, confidence, source count, and timestamps. The **Memory** tab shows every observation. Entries can be disabled and later re-enabled instead of being destructively deleted.
+
+Only active memories are included as soft context in future chat prompts. The current user message and explicit corrections always override stored memory.
 
 ## Local visual generation with ComfyUI
 
-Media generation is optional. Without an enabled workflow, the app behaves as a normal local chat companion.
+Media generation is optional. Configure an exported ComfyUI API-format workflow in **Einstellungen**, choose the positive/negative prompt and seed node ids, run diagnostics, then enable media generation.
 
-1. Start ComfyUI locally.
-2. Build and test a workflow in ComfyUI.
-3. Export the workflow in **API format** to a local JSON file.
-4. Select that file in the app's Settings tab.
-5. Configure the node ids containing the positive prompt, negative prompt, and seed.
-6. Run the local diagnostics.
-7. Enable local media generation.
-
-After each assistant reply, the local language model can decide whether a visual adds something to the scene. If so, it produces a structured media intent, the visual prompt compiler converts that intent into backend-neutral prompts, and the configured ComfyUI workflow generates the file locally. The result is shown inline in the desktop UI and added to the local Media History tab.
-
-The media planner and prompt compiler keep depicted people clearly adult and the reference pipeline is designed for provocative/fetish-inspired but non-graphic visual output.
+After an assistant reply, the local model can decide whether a visual improves the exchange. A backend-neutral prompt compiler turns the structured media intent into prompts and the configured local workflow creates the file. The reference planner keeps depicted people clearly adult and stays in a provocative/fetish-inspired but non-graphic visual lane.
 
 ## Character continuity and visual learning
 
-When a generated scene depicts the recurring companion character, the planner can attach a continuity key. The app stores a local character profile for that key with a stable seed and continuity prompt. Future generations reuse those values so the character has a better chance of remaining visually recognizable across sessions.
+A recurring companion character can use a persistent continuity key, stable seed, and continuity prompt. Media History records the generated file, seed, intent, continuity key, and feedback.
 
-The Media History tab records the generated file, seed, intent, continuity key, and user feedback. Image feedback is converted into a separate, auditable visual-preference profile. The app remembers cues such as mood, theme, visual style, and wardrobe that repeatedly receive positive or negative feedback.
+Image ratings are converted into an auditable visual-preference profile. Repeatedly liked or disliked cues such as mood, theme, style, and wardrobe softly influence later media planning. Changing or clearing a rating reverses that contribution. Current scene context and the user's current request always take priority.
 
-Those learned visual cues are then fed back into future local media planning and prompt compilation as soft preferences. Current scene context and the user's current request still take priority, so this preference memory nudges rather than hard-locks future visuals.
+## Persona snapshots
 
-The Settings tab shows a compact summary of currently learned preferred and avoided visual cues. Removing or changing an image rating also reverses its contribution to the preference profile.
-
-This continuity layer is intentionally backend-neutral. A later version can extend the same character profile with reference-image embeddings, LoRAs, IP-Adapter/ControlNet state, or other local identity-preservation methods without changing the chat/persona layer.
-
-## Persona and snapshots
-
-The Persona Lab lets you change personality traits, min/max limits, per-trait learning rates, lock individual traits, edit preference tags, inspect learning events, create manual snapshots, and restore older states.
-
-A restore is intentionally non-destructive:
+Manual and automatic persona snapshots are immutable. Restore is deliberately non-destructive:
 
 ```text
 current state
@@ -162,20 +120,20 @@ load selected historical state
 write restored state as a new revision
 ```
 
-This means a rollback can itself be undone later.
+A rollback can therefore itself be undone later.
 
 ## Architecture
 
 ```text
 app/
-├── ai/          persona state, prompt compilation, local model adapter, learning analyzer
-├── memory/      SQLite chat/state storage, settings, media history, learning audit, snapshots
-├── media/       media intent, visual preferences, continuity profiles, ComfyUI adapter/service
-├── ui/          Chat, Persona Lab, Media History, Settings, inline media preview
+├── ai/          persona, prompting, local model, behavior learning, adaptive-memory learner
+├── memory/      SQLite chat/state, adaptive memory, settings, media history, audits, snapshots
+├── media/       intent, visual preferences, continuity profiles, ComfyUI adapter/service
+├── ui/          Chat, Persona Lab, Memory, Media History, Settings, media preview
 ├── diagnostics.py
 └── settings.py
 ```
 
 ## Versioning
 
-Application releases use Semantic Versioning. Persona state is versioned independently through immutable snapshots. Model choice, media workflows, continuity profiles, visual preference memory, media feedback, and generated files are local runtime state rather than repository content.
+Application releases use Semantic Versioning. Persona snapshots, adaptive memory, model choice, media workflows, continuity profiles, visual preference memory, feedback, and generated files are local runtime state rather than repository content.

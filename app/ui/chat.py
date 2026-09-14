@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ai.learning import BehaviorLearner, Feedback, LearningResult
+from app.ai.memory_learning import AdaptiveMemoryLearner
 from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
@@ -136,8 +137,47 @@ class LearningWorker(QThread):
         self.completed.emit(result)
 
 
+class MemoryWorker(QThread):
+    completed = Signal(int)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        learner: AdaptiveMemoryLearner,
+        store: StateStore,
+        *,
+        user_text: str,
+        assistant_text: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._learner = learner
+        self._store = store
+        self._user_text = user_text
+        self._assistant_text = assistant_text
+
+    def run(self) -> None:
+        try:
+            proposal = self._learner.propose(
+                user_text=self._user_text,
+                assistant_text=self._assistant_text,
+            )
+            accepted = self._learner.accepted(proposal)
+            for observation in accepted:
+                self._store.upsert_memory_observation(
+                    category=observation.category,
+                    summary=observation.summary,
+                    confidence=observation.confidence,
+                )
+        except Exception as exc:  # adaptive memory must never break chat
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(len(accepted))
+
+
 class ChatWidget(QWidget):
     media_history_changed = Signal()
+    memory_changed = Signal()
 
     def __init__(
         self,
@@ -159,9 +199,11 @@ class ChatWidget(QWidget):
         self.settings = settings or AppSettings()
         self.on_persona_changed = on_persona_changed
         self.learner = BehaviorLearner(model)
+        self.memory_learner = AdaptiveMemoryLearner(model)
         self._worker: ModelWorker | None = None
         self._media_worker: MediaWorker | None = None
         self._learning_worker: LearningWorker | None = None
+        self._memory_worker: MemoryWorker | None = None
         self._pending_user_text = ""
         self._latest_user_text = ""
         self._latest_assistant_text = ""
@@ -212,7 +254,12 @@ class ChatWidget(QWidget):
         self._load_history()
 
     def can_reconfigure(self) -> bool:
-        workers = (self._worker, self._media_worker, self._learning_worker)
+        workers = (
+            self._worker,
+            self._media_worker,
+            self._learning_worker,
+            self._memory_worker,
+        )
         return not any(worker is not None and worker.isRunning() for worker in workers)
 
     def set_services(
@@ -225,6 +272,7 @@ class ChatWidget(QWidget):
             raise RuntimeError("Backends cannot be changed while a local worker is running")
         self.model = model
         self.learner = BehaviorLearner(model)
+        self.memory_learner = AdaptiveMemoryLearner(model)
         self.media_service = media_service
         self.settings = settings.model_copy(deep=True)
         self.media_preview.setVisible(bool(media_service and media_service.enabled))
@@ -262,7 +310,16 @@ class ChatWidget(QWidget):
         self._append_message(ChatMessage(role="user", content=text))
 
         messages = self.store.list_messages(limit=60)
-        system_prompt = build_system_prompt(self.persona, self.preference_tags)
+        memory_notes = (
+            self.store.list_active_memory_summaries(limit=12)
+            if self.settings.adaptive_memory_enabled
+            else []
+        )
+        system_prompt = build_system_prompt(
+            self.persona,
+            self.preference_tags,
+            memory_notes,
+        )
         self._set_busy(True)
 
         worker = ModelWorker(self.model, messages, system_prompt, self)
@@ -280,6 +337,7 @@ class ChatWidget(QWidget):
         self.more_button.setEnabled(True)
         self.less_button.setEnabled(True)
         self._start_media_generation(self._pending_user_text, reply)
+        self._maybe_start_memory_learning(self._pending_user_text, reply)
 
     def _model_failed(self, error: str) -> None:
         QMessageBox.warning(
@@ -300,8 +358,12 @@ class ChatWidget(QWidget):
         self.input.setEnabled(not busy)
         if busy:
             self.status.setText("KI denkt lokal …")
-        elif self._media_worker is None or not self._media_worker.isRunning():
+        elif not self._background_worker_running():
             self.status.setText(f"Modell: {self.model.model}")
+
+    def _background_worker_running(self) -> bool:
+        workers = (self._media_worker, self._learning_worker, self._memory_worker)
+        return any(worker is not None and worker.isRunning() for worker in workers)
 
     def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
         if not self.media_service or not self.media_service.enabled:
@@ -332,7 +394,8 @@ class ChatWidget(QWidget):
         self.media_history_changed.emit()
 
     def _media_skipped(self) -> None:
-        self.status.setText("Kein Bild für diese Antwort nötig")
+        if self._memory_worker is None or not self._memory_worker.isRunning():
+            self.status.setText("Kein Bild für diese Antwort nötig")
 
     def _media_failed(self, error: str) -> None:
         self.status.setText(f"Medien-Backend: {error}")
@@ -343,7 +406,48 @@ class ChatWidget(QWidget):
         if worker is not None:
             worker.deleteLater()
         if self._worker is None or not self._worker.isRunning():
-            self.status.setText(f"Modell: {self.model.model}")
+            if not self._background_worker_running():
+                self.status.setText(f"Modell: {self.model.model}")
+
+    def _maybe_start_memory_learning(self, user_text: str, assistant_text: str) -> None:
+        if not self.settings.adaptive_memory_enabled:
+            return
+        if self._memory_worker is not None and self._memory_worker.isRunning():
+            return
+        count = self.store.assistant_message_count()
+        if count <= 0 or count % self.settings.adaptive_memory_interval != 0:
+            return
+
+        self.status.setText("Lokales Memory prüft stabile Präferenzen …")
+        worker = MemoryWorker(
+            self.memory_learner,
+            self.store,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            parent=self,
+        )
+        worker.completed.connect(self._memory_completed)
+        worker.failed.connect(self._memory_failed)
+        worker.finished.connect(self._memory_finished)
+        self._memory_worker = worker
+        worker.start()
+
+    def _memory_completed(self, stored_count: int) -> None:
+        if stored_count:
+            self.status.setText(f"Memory aktualisiert: {stored_count} Beobachtung(en)")
+            self.memory_changed.emit()
+
+    def _memory_failed(self, error: str) -> None:
+        self.status.setText(f"Memory-Lernen übersprungen: {error}")
+
+    def _memory_finished(self) -> None:
+        worker = self._memory_worker
+        self._memory_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if self._worker is None or not self._worker.isRunning():
+            if not self._background_worker_running():
+                self.status.setText(f"Modell: {self.model.model}")
 
     def _start_learning(self, feedback: Feedback) -> None:
         if not self._latest_user_text or not self._latest_assistant_text:
@@ -402,13 +506,15 @@ class ChatWidget(QWidget):
         self._learning_worker = None
         if worker is not None:
             worker.deleteLater()
-        self.status.setText(f"Modell: {self.model.model}")
+        if self._worker is None or not self._worker.isRunning():
+            if not self._background_worker_running():
+                self.status.setText(f"Modell: {self.model.model}")
 
     def clear_chat(self) -> None:
         answer = QMessageBox.question(
             self,
             "Chat leeren",
-            "Nur den Chatverlauf löschen? Persona, Lernhistorie und Snapshots bleiben erhalten.",
+            "Nur den Chatverlauf löschen? Persona, Langzeit-Memory, Lernhistorie und Snapshots bleiben erhalten.",
         )
         if answer == QMessageBox.StandardButton.Yes:
             self.store.clear_messages()

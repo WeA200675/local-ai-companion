@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import DateTime, Integer, String, Text, delete, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, delete, func, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from app.ai.model import ChatMessage
@@ -61,6 +61,20 @@ class MediaEventRow(Base):
     )
 
 
+class MemoryObservationRow(Base):
+    __tablename__ = "memory_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    summary: Mapped[str] = mapped_column(String(240), nullable=False)
+    normalized_summary: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class StateStore:
     def __init__(self, session_factory: sessionmaker) -> None:
         self._session_factory = session_factory
@@ -83,6 +97,13 @@ class StateStore:
             ).all()
         rows.reverse()
         return [ChatMessage(role=row.role, content=row.content) for row in rows]  # type: ignore[arg-type]
+
+    def assistant_message_count(self) -> int:
+        with self._session_factory() as session:
+            count = session.scalar(
+                select(func.count(ChatMessageRow.id)).where(ChatMessageRow.role == "assistant")
+            )
+        return int(count or 0)
 
     def clear_messages(self) -> None:
         with self._session_factory.begin() as session:
@@ -170,6 +191,102 @@ class StateStore:
 
     def save_visual_preferences(self, profile: VisualPreferenceProfile) -> None:
         self._save_app_state("visual_preferences", profile.model_dump_json())
+
+    @staticmethod
+    def _normalize_memory_summary(summary: str) -> str:
+        return " ".join(summary.casefold().split())[:320]
+
+    def upsert_memory_observation(
+        self,
+        *,
+        category: str,
+        summary: str,
+        confidence: float,
+    ) -> tuple[int, bool]:
+        clean = " ".join(summary.split())[:240]
+        if not clean:
+            raise ValueError("Memory summary must not be empty")
+        normalized = self._normalize_memory_summary(clean)
+        now = datetime.now(timezone.utc)
+        confidence = min(1.0, max(0.0, float(confidence)))
+
+        with self._session_factory.begin() as session:
+            row = session.scalar(
+                select(MemoryObservationRow).where(
+                    MemoryObservationRow.normalized_summary == normalized
+                )
+            )
+            if row is None:
+                row = MemoryObservationRow(
+                    category=category.strip() or "preference",
+                    summary=clean,
+                    normalized_summary=normalized,
+                    confidence=confidence,
+                    active=True,
+                    source_count=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                session.flush()
+                return row.id, True
+
+            changed = False
+            if confidence > row.confidence:
+                row.confidence = confidence
+                changed = True
+            if row.category != category and category.strip():
+                row.category = category.strip()
+                changed = True
+            row.source_count += 1
+            row.updated_at = now
+            return row.id, changed
+
+    def list_memory_observations(self, limit: int = 200) -> list[dict[str, object]]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(MemoryObservationRow)
+                .order_by(
+                    MemoryObservationRow.active.desc(),
+                    MemoryObservationRow.confidence.desc(),
+                    MemoryObservationRow.updated_at.desc(),
+                )
+                .limit(limit)
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "category": row.category,
+                "summary": row.summary,
+                "confidence": row.confidence,
+                "active": row.active,
+                "source_count": row.source_count,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+            for row in rows
+        ]
+
+    def list_active_memory_summaries(self, limit: int = 12) -> list[str]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(MemoryObservationRow)
+                .where(MemoryObservationRow.active.is_(True))
+                .order_by(
+                    MemoryObservationRow.confidence.desc(),
+                    MemoryObservationRow.updated_at.desc(),
+                )
+                .limit(limit)
+            ).all()
+        return [row.summary for row in rows]
+
+    def set_memory_observation_active(self, observation_id: int, active: bool) -> None:
+        with self._session_factory.begin() as session:
+            row = session.get(MemoryObservationRow, observation_id)
+            if row is None:
+                raise KeyError(f"Memory observation {observation_id} not found")
+            row.active = bool(active)
+            row.updated_at = datetime.now(timezone.utc)
 
     def record_learning_event(
         self,

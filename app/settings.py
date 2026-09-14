@@ -25,6 +25,8 @@ class AppSettings(BaseModel):
     continuity_enabled: bool = True
     continuity_key: str = "persona-main"
     learning_snapshots: bool = True
+    adaptive_memory_enabled: bool = True
+    adaptive_memory_interval: int = Field(default=3, ge=1, le=20)
     media_history_limit: int = Field(default=200, ge=10, le=5000)
 
     @field_validator("model_name", "model_url", "media_url", "continuity_key")
@@ -69,6 +71,9 @@ class AppSettings(BaseModel):
             continuity_key=os.getenv("LOCAL_MEDIA_CONTINUITY_KEY", "persona-main"),
             learning_snapshots=os.getenv("LOCAL_LEARNING_SNAPSHOTS", "1").strip().lower()
             not in {"0", "false", "no", "off"},
+            adaptive_memory_enabled=os.getenv("LOCAL_ADAPTIVE_MEMORY", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            adaptive_memory_interval=int(os.getenv("LOCAL_ADAPTIVE_MEMORY_INTERVAL", "3")),
         )
 
     @property
