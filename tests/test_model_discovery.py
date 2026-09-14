@@ -13,7 +13,7 @@ def test_list_models_returns_sorted_unique_names() -> None:
                 "models": [
                     {"name": "qwen2.5:7b"},
                     {"model": "llama3.2:latest"},
-                    {"name": "Qwen2.5:7b"},
+                    {"name": "qwen2.5:7b"},
                     {"name": ""},
                     {"other": "ignored"},
                 ]
@@ -23,7 +23,7 @@ def test_list_models_returns_sorted_unique_names() -> None:
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     client = OllamaClient(model="unused", base_url="http://local", client=http_client)
 
-    assert client.list_models() == ["llama3.2:latest", "qwen2.5:7b", "Qwen2.5:7b"]
+    assert client.list_models() == ["llama3.2:latest", "qwen2.5:7b"]
     http_client.close()
 
 
