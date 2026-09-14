@@ -221,6 +221,17 @@ class CreativeRecipeManager:
             draw_scene_mix=False,
         )
 
+    def _restore_scene_mix(self, conversation_id: str, mix: SceneMix) -> None:
+        state = self.mixer.load()
+        state.active_by_conversation[conversation_id] = mix.model_copy(deep=True)
+        state.recent_signatures = [
+            signature for signature in state.recent_signatures if signature != mix.signature
+        ]
+        state.recent_signatures.append(mix.signature)
+        state.recent_signatures = state.recent_signatures[-12:]
+        state.revision += 1
+        self.mixer.save(state)
+
     def apply(self, conversation_id: str, recipe_id: str) -> CreativeRecipe:
         recipe = self.repository.get(recipe_id)
         if recipe is None:
@@ -235,7 +246,7 @@ class CreativeRecipeManager:
         self.motifs.set_active(conversation_id, recipe.visual_motif_id)
 
         if recipe.scene_mix is not None:
-            self.mixer.set_active(conversation_id, recipe.scene_mix)
+            self._restore_scene_mix(conversation_id, recipe.scene_mix)
         elif recipe.draw_scene_mix:
             self.mixer.draw(conversation_id)
         else:
