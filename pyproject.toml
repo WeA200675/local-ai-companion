@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-ai-companion"
-version = "0.1.0a0"
-description = "Private-first local AI companion with persona state and non-destructive snapshots"
+version = "0.2.0a0"
+description = "Private-first local AI companion with persona state, reversible learning, and local media continuity"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
