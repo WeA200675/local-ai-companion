@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "still",
+      "label": "Fast still image",
+      "kinds": ["image"],
+      "workflow": "workflows/still_api.json",
+      "positive_node": "6",
+      "negative_node": "7",
+      "seed_node": "3",
+      "priority": 10,
+      "enabled": true
+    },
+    {
+      "id": "character",
+      "label": "Character continuity image",
+      "kinds": ["image"],
+      "workflow": "workflows/character_api.json",
+      "positive_node": "6",
+      "negative_node": "7",
+      "seed_node": "3",
+      "reference_node": "12",
+      "reference_input_key": "image",
+      "prefer_for_character": true,
+      "priority": 5,
+      "enabled": true
+    },
+    {
+      "id": "motion",
+      "label": "Short motion loop",
+      "kinds": ["gif", "video"],
+      "workflow": "workflows/motion_api.json",
+      "positive_node": "6",
+      "negative_node": "7",
+      "seed_node": "3",
+      "priority": 0,
+      "enabled": false
+    }
+  ]
+}
