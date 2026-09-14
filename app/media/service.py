@@ -64,6 +64,25 @@ class MediaService:
         ][:limit]
         return liked, disliked
 
+    def _reference_path(self, continuity_key: str | None) -> Path | None:
+        """Select the newest liked local image for this recurring character."""
+
+        if (
+            not continuity_key
+            or not self.settings.media_reference_enabled
+            or self.store is None
+        ):
+            return None
+        for event in self.store.list_media_events(limit=self.settings.media_history_limit):
+            if event.get("continuity_key") != continuity_key:
+                continue
+            if event.get("feedback") != "positive":
+                continue
+            path = Path(str(event.get("path") or "")).expanduser()
+            if path.exists() and path.is_file():
+                return path
+        return None
+
     def plan(
         self,
         *,
@@ -154,8 +173,14 @@ Do not include prose outside the JSON object."""
             seed = profile.seed
             positive = f"{positive}, {profile.appearance_prompt}"
 
+        reference_path = self._reference_path(continuity_key)
         try:
-            generated = self.backend.generate(positive, negative, seed=seed)
+            generated = self.backend.generate(
+                positive,
+                negative,
+                seed=seed,
+                reference_path=reference_path,
+            )
         except ComfyUIError:
             return None
 
