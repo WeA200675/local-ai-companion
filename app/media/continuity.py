@@ -14,6 +14,7 @@ class CharacterProfile(BaseModel):
         "same clearly adult companion character, consistent face, consistent hair, "
         "consistent body proportions, recognizable identity across images"
     )
+    appearance_revision: int = Field(default=1, ge=1)
     generation_count: int = Field(default=0, ge=0)
     positive_feedback: int = Field(default=0, ge=0)
     negative_feedback: int = Field(default=0, ge=0)
@@ -39,6 +40,24 @@ class CharacterProfile(BaseModel):
             self.negative_feedback += 1
         else:
             raise ValueError(f"Unsupported media feedback: {feedback}")
+
+    def set_appearance(self, prompt: str) -> bool:
+        clean = " ".join(prompt.split())
+        if not clean:
+            raise ValueError("Appearance prompt must not be empty")
+        if clean == self.appearance_prompt:
+            return False
+        self.appearance_prompt = clean
+        self.appearance_revision += 1
+        return True
+
+    def rotate_seed(self) -> int:
+        old = self.seed
+        while True:
+            new = random.SystemRandom().randrange(1, 2**63 - 1)
+            if new != old:
+                self.seed = new
+                return new
 
     def set_reference(self, media_id: int, path: str) -> None:
         clean = path.strip()
