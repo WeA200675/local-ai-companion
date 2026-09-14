@@ -13,12 +13,14 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.ai.creative_director import CreativeDirector, CreativeDirectorRepository
+from app.ai.creative_recipes import CreativeRecipeManager, CreativeRecipeRepository
 from app.ai.look_presets import LookPresetRepository
 from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.scene_mixer import SceneMixerRepository
 from app.ai.session_arcs import SessionArcRepository
 from app.ai.variety import VarietyRepository
+from app.ai.visual_motifs import VisualMotifRepository
 from app.backup import BackupError, apply_pending_restore
 from app.media.comfyui import ComfyUIClient
 from app.media.service import MediaService
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self.look_repository = LookPresetRepository(self.store)
         self.arc_repository = SessionArcRepository(self.store)
         self.mixer_repository = SceneMixerRepository(self.store)
+        self.motif_repository = VisualMotifRepository(self.store)
         self.director_repository = CreativeDirectorRepository(self.store)
         self.creative_director = CreativeDirector(
             self.director_repository,
@@ -73,6 +76,16 @@ class MainWindow(QMainWindow):
             self.arc_repository,
             self.mixer_repository,
             self.variety_repository,
+            self.motif_repository,
+        )
+        self.recipe_repository = CreativeRecipeRepository(self.store)
+        self.recipe_manager = CreativeRecipeManager(
+            self.recipe_repository,
+            self.look_repository,
+            self.variety_repository,
+            self.arc_repository,
+            self.mixer_repository,
+            self.motif_repository,
         )
 
         self.model, self.media_service = self._build_services(self.settings)
@@ -99,6 +112,8 @@ class MainWindow(QMainWindow):
             active_arc=self.arc_repository.active(active_conversation_id),
             mixer_repository=self.mixer_repository,
             scene_mix=self.mixer_repository.active(active_conversation_id),
+            motif_repository=self.motif_repository,
+            visual_motif=self.motif_repository.active(active_conversation_id),
             creative_director=self.creative_director,
         )
         self.conversations_widget = ConversationsWidget(
@@ -113,8 +128,10 @@ class MainWindow(QMainWindow):
             self.look_repository,
             self.arc_repository,
             self.mixer_repository,
+            self.motif_repository,
             self.creative_director,
             self.director_repository,
+            self.recipe_manager,
             active_conversation_id,
         )
         self.context_inspector = ContextInspectorWidget(self.store, self.chat)
@@ -166,7 +183,12 @@ class MainWindow(QMainWindow):
         self.creative_variety.scene_mix_changed.connect(
             lambda _mix: self.context_inspector.refresh()
         )
+        self.creative_variety.visual_motif_changed.connect(self.chat.set_visual_motif)
+        self.creative_variety.visual_motif_changed.connect(
+            lambda _motif: self.context_inspector.refresh()
+        )
         self.creative_variety.director_applied.connect(self._creative_director_applied)
+        self.creative_variety.recipe_applied.connect(self._creative_director_applied)
         self.chat.creative_context_changed.connect(self._creative_director_auto_changed)
         self.chat.memory_changed.connect(self.memory_lab.refresh)
         self.chat.memory_changed.connect(self.context_inspector.refresh)
