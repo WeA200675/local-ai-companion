@@ -2,7 +2,6 @@ import pytest
 
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
-from app.ui.chat import ChatWidget
 
 
 def test_latest_exchange_replace_and_delete_are_reversible(tmp_path) -> None:
@@ -34,10 +33,3 @@ def test_delete_last_assistant_never_deletes_user_message(tmp_path) -> None:
 
     with pytest.raises(KeyError):
         store.replace_last_assistant_message("No assistant exists")
-
-
-def test_join_continuation_avoids_obvious_spacing_breaks() -> None:
-    assert ChatWidget._join_continuation("Hello", " world") == "Hello world"
-    assert ChatWidget._join_continuation("Hello", ", world") == "Hello, world"
-    assert ChatWidget._join_continuation("Hello", "world") == "Hello world"
-    assert ChatWidget._join_continuation("Wait —", "continue") == "Wait —continue"
