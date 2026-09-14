@@ -21,6 +21,7 @@ from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
 from app.media.service import MediaService
 from app.memory.store import StateStore
+from app.settings import AppSettings
 from app.ui.media_preview import MediaPreview
 
 
@@ -136,6 +137,8 @@ class LearningWorker(QThread):
 
 
 class ChatWidget(QWidget):
+    media_history_changed = Signal()
+
     def __init__(
         self,
         store: StateStore,
@@ -143,6 +146,7 @@ class ChatWidget(QWidget):
         persona: PersonaState,
         preference_tags: list[str] | None = None,
         media_service: MediaService | None = None,
+        settings: AppSettings | None = None,
         on_persona_changed: Callable[[PersonaState], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -152,6 +156,7 @@ class ChatWidget(QWidget):
         self.persona = persona
         self.preference_tags = preference_tags or []
         self.media_service = media_service
+        self.settings = settings or AppSettings()
         self.on_persona_changed = on_persona_changed
         self.learner = BehaviorLearner(model)
         self._worker: ModelWorker | None = None
@@ -205,6 +210,25 @@ class ChatWidget(QWidget):
         self.send_shortcut.activated.connect(self.send_current)
 
         self._load_history()
+
+    def can_reconfigure(self) -> bool:
+        workers = (self._worker, self._media_worker, self._learning_worker)
+        return not any(worker is not None and worker.isRunning() for worker in workers)
+
+    def set_services(
+        self,
+        model: OllamaClient,
+        media_service: MediaService | None,
+        settings: AppSettings,
+    ) -> None:
+        if not self.can_reconfigure():
+            raise RuntimeError("Backends cannot be changed while a local worker is running")
+        self.model = model
+        self.learner = BehaviorLearner(model)
+        self.media_service = media_service
+        self.settings = settings.model_copy(deep=True)
+        self.media_preview.setVisible(bool(media_service and media_service.enabled))
+        self.status.setText(f"Modell: {self.model.model}")
 
     def _load_history(self) -> None:
         self.transcript.clear()
@@ -305,6 +329,7 @@ class ChatWidget(QWidget):
     def _media_generated(self, path: str, description: str) -> None:
         self.media_preview.show_media(path, description=description)
         self.status.setText("Lokales Medium erzeugt")
+        self.media_history_changed.emit()
 
     def _media_skipped(self) -> None:
         self.status.setText("Kein Bild für diese Antwort nötig")
@@ -344,6 +369,9 @@ class ChatWidget(QWidget):
         worker.start()
 
     def _learning_completed(self, result: LearningResult) -> None:
+        if self.settings.learning_snapshots:
+            self.store.snapshot_persona(self.persona, kind="pre_learning")
+
         self.persona = result.persona
         self.store.save_persona(self.persona)
         self.store.record_learning_event(
@@ -351,6 +379,10 @@ class ChatWidget(QWidget):
             deltas=result.deltas,
             rationale=result.rationale,
         )
+
+        if self.settings.learning_snapshots:
+            self.store.snapshot_persona(self.persona, kind="learning")
+
         if self.on_persona_changed is not None:
             self.on_persona_changed(self.persona)
         changed = [
