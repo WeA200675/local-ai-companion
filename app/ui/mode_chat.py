@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.prompting import build_system_prompt
+from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.scene_presets import ScenePreset
+from app.ai.session_arcs import ActiveArc, SessionArcRepository
 from app.ai.session_modes import SessionMode
 from app.ai.variety import VarietyCard, VarietyRepository
 from app.memory.conversations import ConversationRepository
@@ -10,7 +13,7 @@ from app.ui.chat import ChatWidget, MediaWorker
 
 
 class ModeAwareChatWidget(ChatWidget):
-    """ChatWidget variant with temporary SessionMode, ScenePreset and Variety overlays."""
+    """ChatWidget variant with temporary mode, scene, variety and creative overlays."""
 
     def __init__(
         self,
@@ -20,6 +23,12 @@ class ModeAwareChatWidget(ChatWidget):
         conversation_repository: ConversationRepository | None = None,
         variety_repository: VarietyRepository | None = None,
         variety_card: VarietyCard | None = None,
+        look_repository: LookPresetRepository | None = None,
+        look_preset: LookPreset | None = None,
+        arc_repository: SessionArcRepository | None = None,
+        active_arc: ActiveArc | None = None,
+        mixer_repository: SceneMixerRepository | None = None,
+        scene_mix: SceneMix | None = None,
         **kwargs,
     ) -> None:
         self.session_mode = session_mode
@@ -27,6 +36,12 @@ class ModeAwareChatWidget(ChatWidget):
         self.conversations = conversation_repository
         self.variety_repository = variety_repository
         self.variety_card = variety_card
+        self.look_repository = look_repository
+        self.look_preset = look_preset
+        self.arc_repository = arc_repository
+        self.active_arc = active_arc
+        self.mixer_repository = mixer_repository
+        self.scene_mix = scene_mix
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
 
@@ -51,6 +66,29 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Impuls: {card.name}")
 
+    def set_look_preset(self, preset: LookPreset | None) -> None:
+        self.look_preset = preset.model_copy(deep=True) if preset is not None else None
+        if preset is None:
+            self.status.setText("Look: Basis")
+        else:
+            self.status.setText(f"Look: {preset.name}")
+
+    def set_active_arc(self, active: ActiveArc | None) -> None:
+        self.active_arc = active.model_copy(deep=True) if active is not None else None
+        if active is None:
+            self.status.setText("Session-Arc: aus")
+        else:
+            self.status.setText(
+                f"Arc: {active.arc_name} · {active.stage_name} ({active.stage_index + 1}/{active.stage_count})"
+            )
+
+    def set_scene_mix(self, mix: SceneMix | None) -> None:
+        self.scene_mix = mix.model_copy(deep=True) if mix is not None else None
+        if mix is None:
+            self.status.setText("Scene Mixer: aus")
+        else:
+            self.status.setText(f"Scene Mixer: {mix.title}")
+
     def set_conversation(self, conversation_id: str) -> None:
         if self.conversations is None:
             return
@@ -59,6 +97,12 @@ class ModeAwareChatWidget(ChatWidget):
         self.conversations.set_active(conversation_id)
         if self.variety_repository is not None:
             self.variety_card = self.variety_repository.active(conversation_id)
+        if self.look_repository is not None:
+            self.look_preset = self.look_repository.active(conversation_id)
+        if self.arc_repository is not None:
+            self.active_arc = self.arc_repository.active(conversation_id)
+        if self.mixer_repository is not None:
+            self.scene_mix = self.mixer_repository.active(conversation_id)
         self._pending_user_text = ""
         self._latest_user_text = ""
         self._latest_assistant_text = ""
@@ -85,6 +129,12 @@ class ModeAwareChatWidget(ChatWidget):
             tags.extend(self.scene_preset.style_tags)
         if self.variety_card is not None:
             tags.extend(self.variety_card.style_tags)
+        if self.look_preset is not None:
+            tags.extend(self.look_preset.style_tags)
+        if self.active_arc is not None:
+            tags.extend(self.active_arc.style_tags)
+        if self.scene_mix is not None:
+            tags.extend(self.scene_mix.style_tags)
 
         result: list[str] = []
         seen: set[str] = set()
@@ -106,6 +156,21 @@ class ModeAwareChatWidget(ChatWidget):
             return ""
         return f"{self.variety_card.name}: {self.variety_card.instruction}"
 
+    def _look_context(self) -> str:
+        if self.look_preset is None:
+            return ""
+        return self.look_preset.prompt_text()
+
+    def _arc_context(self) -> str:
+        if self.active_arc is None:
+            return ""
+        return self.active_arc.prompt_text()
+
+    def _scene_mix_context(self) -> str:
+        if self.scene_mix is None:
+            return ""
+        return self.scene_mix.prompt_text()
+
     def _system_prompt(self) -> str:
         memory_notes = (
             self.store.list_active_memory_summaries(limit=12)
@@ -120,6 +185,9 @@ class ModeAwareChatWidget(ChatWidget):
             core_memory_notes,
             self._scene_context(),
             self._variety_context(),
+            self._look_context(),
+            self._arc_context(),
+            self._scene_mix_context(),
         )
 
     def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
@@ -135,6 +203,15 @@ class ModeAwareChatWidget(ChatWidget):
         variety_context = self._variety_context()
         if variety_context:
             planner_parts.append(f"Temporary variety spark: {variety_context}")
+        look_context = self._look_context()
+        if look_context:
+            planner_parts.append(f"Temporary look preset: {look_context}")
+        arc_context = self._arc_context()
+        if arc_context:
+            planner_parts.append(f"Current session arc phase: {arc_context}")
+        mix_context = self._scene_mix_context()
+        if mix_context:
+            planner_parts.append(f"Temporary scene mixer layer: {mix_context}")
         planner_user_text = "\n\n".join(planner_parts)
 
         self.media_preview.setVisible(True)
