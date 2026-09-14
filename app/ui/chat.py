@@ -89,7 +89,8 @@ class ChatWidget(QWidget):
 
         self.send_button.clicked.connect(self.send_current)
         self.clear_button.clicked.connect(self.clear_chat)
-        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.send_current)
+        self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self.send_shortcut.activated.connect(self.send_current)
 
         self._load_history()
 
@@ -100,9 +101,14 @@ class ChatWidget(QWidget):
 
     def _append_message(self, message: ChatMessage) -> None:
         label = "Du" if message.role == "user" else self.persona.name
-        safe_text = message.content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        safe_text = (
+            message.content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+        safe_text = safe_text.replace("\n", "<br>")
         self.transcript.append(f"<b>{label}:</b><br>{safe_text}<br>")
-        self.transcript.verticalScrollBar().setValue(self.transcript.verticalScrollBar().maximum())
+        self.transcript.verticalScrollBar().setValue(
+            self.transcript.verticalScrollBar().maximum()
+        )
 
     def send_current(self) -> None:
         if self._worker is not None and self._worker.isRunning():
