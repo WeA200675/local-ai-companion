@@ -12,6 +12,10 @@ def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
 
     settings = AppSettings(
         model_name="local-model",
+        chat_temperature=1.15,
+        chat_history_messages=120,
+        chat_num_ctx=16384,
+        chat_num_predict=900,
         media_enabled=True,
         media_workflow=str(tmp_path / "workflow.json"),
         continuity_key="nova-main",
@@ -21,6 +25,10 @@ def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
 
     loaded = store.load_settings()
     assert loaded.model_name == "local-model"
+    assert loaded.chat_temperature == 1.15
+    assert loaded.chat_history_messages == 120
+    assert loaded.chat_num_ctx == 16384
+    assert loaded.chat_num_predict == 900
     assert loaded.media_enabled is True
     assert loaded.continuity_key == "nova-main"
     assert loaded.media_history_limit == 321
