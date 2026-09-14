@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 
+from app.ai.anti_repetition import AntiRepetitionRepository
+from app.ai.creative_accents import (
+    DetailAccent,
+    DetailAccentRepository,
+    MoodGrade,
+    MoodGradeRepository,
+)
 from app.ai.creative_director import CreativeDirector
 from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.prompting import build_system_prompt
@@ -37,6 +44,11 @@ class ModeAwareChatWidget(ChatWidget):
         scene_mix: SceneMix | None = None,
         motif_repository: VisualMotifRepository | None = None,
         visual_motif: VisualMotif | None = None,
+        mood_repository: MoodGradeRepository | None = None,
+        mood_grade: MoodGrade | None = None,
+        detail_repository: DetailAccentRepository | None = None,
+        detail_accent: DetailAccent | None = None,
+        anti_repetition_repository: AntiRepetitionRepository | None = None,
         creative_director: CreativeDirector | None = None,
         **kwargs,
     ) -> None:
@@ -53,6 +65,11 @@ class ModeAwareChatWidget(ChatWidget):
         self.scene_mix = scene_mix
         self.motif_repository = motif_repository
         self.visual_motif = visual_motif
+        self.mood_repository = mood_repository
+        self.mood_grade = mood_grade
+        self.detail_repository = detail_repository
+        self.detail_accent = detail_accent
+        self.anti_repetition_repository = anti_repetition_repository
         self.creative_director = creative_director
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
@@ -108,6 +125,20 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Visual-Motiv: {motif.name}")
 
+    def set_mood_grade(self, grade: MoodGrade | None) -> None:
+        self.mood_grade = grade.model_copy(deep=True) if grade is not None else None
+        if grade is None:
+            self.status.setText("Mood-Grade: Basis")
+        else:
+            self.status.setText(f"Mood-Grade: {grade.name}")
+
+    def set_detail_accent(self, accent: DetailAccent | None) -> None:
+        self.detail_accent = accent.model_copy(deep=True) if accent is not None else None
+        if accent is None:
+            self.status.setText("Detail-Akzent: aus")
+        else:
+            self.status.setText(f"Detail-Akzent: {accent.name}")
+
     def refresh_creative_overlays(self) -> None:
         if self.conversations is None:
             return
@@ -122,6 +153,10 @@ class ModeAwareChatWidget(ChatWidget):
             self.scene_mix = self.mixer_repository.active(conversation_id)
         if self.motif_repository is not None:
             self.visual_motif = self.motif_repository.active(conversation_id)
+        if self.mood_repository is not None:
+            self.mood_grade = self.mood_repository.active(conversation_id)
+        if self.detail_repository is not None:
+            self.detail_accent = self.detail_repository.active(conversation_id)
 
     def set_conversation(self, conversation_id: str) -> None:
         if self.conversations is None:
@@ -164,6 +199,10 @@ class ModeAwareChatWidget(ChatWidget):
             tags.extend(self.scene_mix.style_tags)
         if self.visual_motif is not None:
             tags.extend(self.visual_motif.prompt_tags())
+        if self.mood_grade is not None:
+            tags.extend(self.mood_grade.style_tags)
+        if self.detail_accent is not None:
+            tags.extend(self.detail_accent.style_tags)
 
         result: list[str] = []
         seen: set[str] = set()
@@ -205,6 +244,40 @@ class ModeAwareChatWidget(ChatWidget):
             return ""
         return self.visual_motif.prompt_text()
 
+    def _mood_grade_context(self) -> str:
+        if self.mood_grade is None:
+            return ""
+        return self.mood_grade.prompt_text()
+
+    def _detail_accent_context(self) -> str:
+        if self.detail_accent is None:
+            return ""
+        return self.detail_accent.prompt_text()
+
+    def _creative_signature(self) -> str:
+        parts = [
+            f"look:{self.look_preset.id if self.look_preset else 'base'}",
+            f"variety:{self.variety_card.id if self.variety_card else 'base'}",
+            (
+                f"arc:{self.active_arc.arc_id}:{self.active_arc.stage_index}"
+                if self.active_arc is not None
+                else "arc:base"
+            ),
+            f"scene:{self.scene_mix.signature if self.scene_mix else 'base'}",
+            f"motif:{self.visual_motif.id if self.visual_motif else 'base'}",
+            f"mood:{self.mood_grade.id if self.mood_grade else 'base'}",
+            f"detail:{self.detail_accent.id if self.detail_accent else 'base'}",
+        ]
+        return "|".join(parts)
+
+    def _anti_repetition_context(self) -> str:
+        if self.anti_repetition_repository is None or self.conversations is None:
+            return ""
+        return self.anti_repetition_repository.guidance(
+            self.conversations.active_id(),
+            self._creative_signature(),
+        )
+
     def _system_prompt(self) -> str:
         memory_notes = (
             self.store.list_active_memory_summaries(limit=12)
@@ -222,15 +295,25 @@ class ModeAwareChatWidget(ChatWidget):
             self._look_context(),
             self._arc_context(),
             self._scene_mix_context(),
+            self._visual_motif_context(),
+            self._mood_grade_context(),
+            self._detail_accent_context(),
+            self._anti_repetition_context(),
         )
 
     def _model_completed(self, reply: str) -> None:
         # Finish the current response and its media planning with the context that
         # produced it. Any automatic rotation below applies only to the next turn.
         super()._model_completed(reply)
-        if self.creative_director is None or self.conversations is None:
+        conversation_id = self.conversations.active_id() if self.conversations is not None else None
+        if conversation_id and self.anti_repetition_repository is not None:
+            self.anti_repetition_repository.record_reply(
+                conversation_id,
+                reply,
+                self._creative_signature(),
+            )
+        if self.creative_director is None or conversation_id is None:
             return
-        conversation_id = self.conversations.active_id()
         result = self.creative_director.maybe_rotate(
             conversation_id,
             assistant_count=self.store.assistant_message_count(),
@@ -244,6 +327,8 @@ class ModeAwareChatWidget(ChatWidget):
             "arc": "Arc",
             "scene_mix": "Scene Mixer",
             "visual_motif": "Visual-Motiv",
+            "mood_grade": "Mood-Grade",
+            "detail_accent": "Detail-Akzent",
         }
         summary = ", ".join(labels.get(item, item) for item in result.changed)
         self.status.setText(f"Kreative Regie für nächste Antwort: {summary}")
@@ -274,6 +359,15 @@ class ModeAwareChatWidget(ChatWidget):
         motif_context = self._visual_motif_context()
         if motif_context:
             planner_parts.append(f"Temporary visual motif: {motif_context}")
+        mood_context = self._mood_grade_context()
+        if mood_context:
+            planner_parts.append(f"Temporary mood grade: {mood_context}")
+        detail_context = self._detail_accent_context()
+        if detail_context:
+            planner_parts.append(f"Temporary detail accent: {detail_context}")
+        anti_context = self._anti_repetition_context()
+        if anti_context:
+            planner_parts.append(f"Local anti-repetition guidance: {anti_context}")
         planner_user_text = "\n\n".join(planner_parts)
 
         self.media_preview.setVisible(True)
