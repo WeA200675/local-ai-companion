@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QMessageBox,
+    QStackedWidget,
+    QTabWidget,
+)
 
 from app import __version__
 from app.ai.model import OllamaClient
@@ -12,6 +19,7 @@ from app.media.comfyui import ComfyUIClient
 from app.media.service import MediaService
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
+from app.privacy import PrivacyConfig, PrivacyStore
 from app.settings import AppSettings
 from app.ui.backup import BackupWidget
 from app.ui.character_studio import CharacterStudio
@@ -19,6 +27,7 @@ from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
 from app.ui.mode_chat import ModeAwareChatWidget
 from app.ui.persona_lab import PersonaLab
+from app.ui.privacy import PrivacyActivityMonitor, PrivacyLockScreen, PrivacySettingsWidget
 from app.ui.session_modes import SessionModesWidget
 from app.ui.settings import SettingsWidget
 
@@ -28,6 +37,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Local AI Companion — v{__version__}")
         self.resize(1120, 860)
+        self._startup_notice: tuple[str, str, str] | None = None
 
         self.session_factory = make_session_factory()
         self.store = StateStore(self.session_factory)
@@ -35,6 +45,8 @@ class MainWindow(QMainWindow):
         self.store.save_persona(self.persona)
         preference_tags = self.store.load_preference_tags()
         self.settings = self.store.load_settings(AppSettings.from_env())
+        self.privacy_repository = PrivacyStore(self.store)
+        self.privacy_config = self.privacy_repository.load()
 
         self.model, self.media_service = self._build_services(self.settings)
         self.session_modes = SessionModesWidget(self.store)
@@ -65,6 +77,7 @@ class MainWindow(QMainWindow):
             limit=self.settings.media_history_limit,
         )
         self.settings_widget = SettingsWidget(self.store, self.settings)
+        self.privacy_settings = PrivacySettingsWidget(self.store)
         self.backup_widget = BackupWidget()
 
         self.persona_lab.persona_changed.connect(self._persona_changed)
@@ -81,16 +94,89 @@ class MainWindow(QMainWindow):
         self.character_studio.profile_changed.connect(lambda _key: self.media_history.refresh())
         self.settings_widget.settings_saved.connect(self._settings_saved)
 
-        tabs = QTabWidget()
-        tabs.addTab(self.chat, "Chat")
-        tabs.addTab(self.session_modes, "Session-Modi")
-        tabs.addTab(self.persona_lab, "Persona Lab")
-        tabs.addTab(self.memory_lab, "Memory")
-        tabs.addTab(self.character_studio, "Character Studio")
-        tabs.addTab(self.media_history, "Medien")
-        tabs.addTab(self.settings_widget, "Einstellungen")
-        tabs.addTab(self.backup_widget, "Backup")
-        self.setCentralWidget(tabs)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.chat, "Chat")
+        self.tabs.addTab(self.session_modes, "Session-Modi")
+        self.tabs.addTab(self.persona_lab, "Persona Lab")
+        self.tabs.addTab(self.memory_lab, "Memory")
+        self.tabs.addTab(self.character_studio, "Character Studio")
+        self.tabs.addTab(self.media_history, "Medien")
+        self.tabs.addTab(self.settings_widget, "Einstellungen")
+        self.tabs.addTab(self.privacy_settings, "Privatsphäre")
+        self.tabs.addTab(self.backup_widget, "Backup")
+
+        self.lock_screen = PrivacyLockScreen(self.store)
+        self.lock_screen.unlocked.connect(self._unlock_privacy)
+        self.privacy_settings.config_changed.connect(self._privacy_config_changed)
+        self.privacy_settings.lock_requested.connect(self.lock_privacy)
+
+        self.shell = QStackedWidget()
+        self.shell.addWidget(self.lock_screen)
+        self.shell.addWidget(self.tabs)
+        self.setCentralWidget(self.shell)
+
+        self.privacy_monitor = PrivacyActivityMonitor(self)
+        self.privacy_monitor.lock_due.connect(self.lock_privacy)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self.privacy_monitor)
+
+        self.lock_shortcut = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+        self.lock_shortcut.activated.connect(self.lock_privacy)
+
+        if self.privacy_config.enabled:
+            self.lock_privacy()
+        else:
+            self._unlock_privacy()
+
+    @property
+    def privacy_locked(self) -> bool:
+        return self.shell.currentWidget() is self.lock_screen
+
+    def queue_startup_notice(self, kind: str, title: str, message: str) -> None:
+        self._startup_notice = (kind, title, message)
+        if not self.privacy_locked:
+            self._show_startup_notice()
+
+    def _show_startup_notice(self) -> None:
+        notice = self._startup_notice
+        self._startup_notice = None
+        if notice is None:
+            return
+        kind, title, message = notice
+        if kind == "warning":
+            QMessageBox.warning(self, title, message)
+        else:
+            QMessageBox.information(self, title, message)
+
+    def lock_privacy(self) -> None:
+        self.privacy_config = self.privacy_repository.load()
+        if not self.privacy_config.enabled or not self.privacy_config.has_passphrase:
+            return
+        self.lock_screen.reload_config()
+        self.shell.setCurrentWidget(self.lock_screen)
+        self.privacy_monitor.configure(self.privacy_config.auto_lock_minutes, active=False)
+        self.lock_screen.focus_passphrase()
+
+    def _unlock_privacy(self) -> None:
+        self.privacy_config = self.privacy_repository.load()
+        self.shell.setCurrentWidget(self.tabs)
+        self.privacy_monitor.configure(
+            self.privacy_config.auto_lock_minutes,
+            active=self.privacy_config.enabled,
+        )
+        self.privacy_settings.refresh()
+        self._show_startup_notice()
+
+    def _privacy_config_changed(self, config: PrivacyConfig) -> None:
+        self.privacy_config = config.model_copy(deep=True)
+        self.lock_screen.reload_config()
+        self.privacy_monitor.configure(
+            self.privacy_config.auto_lock_minutes,
+            active=self.privacy_config.enabled and not self.privacy_locked,
+        )
+        if not self.privacy_config.enabled and self.privacy_locked:
+            self._unlock_privacy()
 
     def _build_services(self, settings: AppSettings) -> tuple[OllamaClient, MediaService]:
         model = OllamaClient(
@@ -175,15 +261,15 @@ def main() -> int:
     window.show()
 
     if restore_error:
-        QMessageBox.warning(
-            window,
+        window.queue_startup_notice(
+            "warning",
             "Backup-Wiederherstellung fehlgeschlagen",
             "Der bisherige lokale Stand wurde weiter verwendet. Die vorgemerkte Wiederherstellung wurde nicht angewendet.\n\n"
             + restore_error,
         )
     elif previous_backup is not None:
-        QMessageBox.information(
-            window,
+        window.queue_startup_notice(
+            "information",
             "Backup wiederhergestellt",
             f"Der importierte Stand ist aktiv. Der vorherige SQLite-Stand wurde vorher gesichert unter:\n{previous_backup}",
         )
