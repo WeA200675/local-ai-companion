@@ -65,6 +65,20 @@ class OllamaClient:
         )
         return wire_messages
 
+    @staticmethod
+    def _chat_options(
+        temperature: float,
+        *,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
+    ) -> dict[str, float | int]:
+        options: dict[str, float | int] = {"temperature": temperature}
+        if num_ctx is not None and num_ctx > 0:
+            options["num_ctx"] = num_ctx
+        if num_predict is not None and num_predict > 0:
+            options["num_predict"] = num_predict
+        return options
+
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self._client.post(f"{self.base_url}/api/chat", json=payload)
@@ -82,12 +96,18 @@ class OllamaClient:
         *,
         system_prompt: str,
         temperature: float = 0.85,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
     ) -> str:
         payload = {
             "model": self.model,
             "messages": self._wire_messages(messages, system_prompt),
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": self._chat_options(
+                temperature,
+                num_ctx=num_ctx,
+                num_predict=num_predict,
+            ),
         }
         data = self._post_chat(payload)
         content = data.get("message", {}).get("content")
@@ -101,6 +121,8 @@ class OllamaClient:
         *,
         system_prompt: str,
         temperature: float = 0.85,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> Iterator[str]:
         """Yield an interactive reply as Ollama NDJSON chunks arrive.
@@ -115,7 +137,11 @@ class OllamaClient:
             "model": self.model,
             "messages": self._wire_messages(messages, system_prompt),
             "stream": True,
-            "options": {"temperature": temperature},
+            "options": self._chat_options(
+                temperature,
+                num_ctx=num_ctx,
+                num_predict=num_predict,
+            ),
         }
         emitted = False
         try:
