@@ -24,7 +24,7 @@ Implemented on the bootstrap branch:
 
 Chats, preferences, generated media, photos, model files, logs, and local databases should stay on the local machine and must not be committed to the repository.
 
-The default database is written to `data/companion.sqlite3`. Generated media defaults to `data/generated_media/`. The `data/` directory is gitignored.
+The default database is written to `data/companion.sqlite3`. Generated media defaults to `data/generated_media/`. The `data/` directory is gitignored. Ollama and ComfyUI endpoints default to loopback addresses, so the reference configuration does not require a cloud model service.
 
 ## Quick start
 
