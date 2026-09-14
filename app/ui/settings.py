@@ -140,6 +140,19 @@ class SettingsWidget(QWidget):
         self.continuity_enabled = QCheckBox("Wiederkehrende Figur visuell stabil halten")
         self.continuity_enabled.setChecked(settings.continuity_enabled)
         self.continuity_key = QLineEdit(settings.continuity_key)
+
+        self.media_reference_enabled = QCheckBox(
+            "Positiv bewertetes Bild als lokale Charakter-Referenz wiederverwenden"
+        )
+        self.media_reference_enabled.setChecked(settings.media_reference_enabled)
+        self.media_reference_enabled.setToolTip(
+            "Verwendet das neueste positiv bewertete Bild derselben Figur als ComfyUI-Referenz."
+        )
+        self.media_reference_node = QLineEdit(settings.media_reference_node)
+        self.media_reference_node.setPlaceholderText("z. B. LoadImage-Node")
+        self.media_reference_input_key = QLineEdit(settings.media_reference_input_key)
+        self.media_reference_input_key.setPlaceholderText("image")
+
         self.learning_snapshots = QCheckBox("Vor/nach Lernschritten automatisch Snapshots anlegen")
         self.learning_snapshots.setChecked(settings.learning_snapshots)
         self.adaptive_memory_enabled = QCheckBox("Lokales adaptives Langzeit-Memory aktivieren")
@@ -184,6 +197,9 @@ class SettingsWidget(QWidget):
         form.addRow("Medien-Ausgabe", output_row)
         form.addRow("Character-Continuity", self.continuity_enabled)
         form.addRow("Continuity-Key", self.continuity_key)
+        form.addRow("Referenzbild-Continuity", self.media_reference_enabled)
+        form.addRow("Referenzbild-Node", self.media_reference_node)
+        form.addRow("Referenzbild-Input", self.media_reference_input_key)
         form.addRow("Lern-Snapshots", self.learning_snapshots)
         form.addRow("Adaptives Memory", self.adaptive_memory_enabled)
         form.addRow("Memory-Prüfung alle", self.adaptive_memory_interval)
@@ -305,6 +321,9 @@ class SettingsWidget(QWidget):
             media_output_dir=self.media_output_dir.text(),
             continuity_enabled=self.continuity_enabled.isChecked(),
             continuity_key=self.continuity_key.text(),
+            media_reference_enabled=self.media_reference_enabled.isChecked(),
+            media_reference_node=self.media_reference_node.text(),
+            media_reference_input_key=self.media_reference_input_key.text(),
             learning_snapshots=self.learning_snapshots.isChecked(),
             adaptive_memory_enabled=self.adaptive_memory_enabled.isChecked(),
             adaptive_memory_interval=self.adaptive_memory_interval.value(),

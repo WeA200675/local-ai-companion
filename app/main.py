@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
             positive_node=settings.media_positive_node,
             negative_node=settings.media_negative_node,
             seed_node=settings.media_seed_node,
+            reference_node=settings.media_reference_node,
+            reference_input_key=settings.media_reference_input_key,
             output_dir=settings.output_path,
         )
         media_service = MediaService(

@@ -79,6 +79,31 @@ def _check_workflow(settings: AppSettings) -> DiagnosticResult:
             False,
             f"Konfigurierte Node-IDs fehlen: {', '.join(missing)}",
         )
+
+    if settings.media_reference_enabled:
+        node_id = settings.media_reference_node.strip()
+        input_key = settings.media_reference_input_key.strip()
+        if not node_id:
+            return DiagnosticResult(
+                "ComfyUI-Workflow",
+                False,
+                "Referenzbild-Continuity ist aktiv, aber keine Referenzbild-Node ist konfiguriert",
+            )
+        node = payload.get(node_id)
+        if not isinstance(node, dict):
+            return DiagnosticResult(
+                "ComfyUI-Workflow",
+                False,
+                f"Referenzbild-Node fehlt: {node_id}",
+            )
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict) or not input_key or input_key not in inputs:
+            return DiagnosticResult(
+                "ComfyUI-Workflow",
+                False,
+                f"Referenzbild-Node {node_id} hat keinen Input {input_key!r}",
+            )
+
     return DiagnosticResult("ComfyUI-Workflow", True, f"Workflow geladen: {path.name}")
 
 

@@ -16,6 +16,7 @@ def test_local_diagnostics_success(monkeypatch, tmp_path) -> None:
                 "6": {"inputs": {"text": "positive"}},
                 "7": {"inputs": {"text": "negative"}},
                 "3": {"inputs": {"seed": 1}},
+                "12": {"inputs": {"image": "example.png"}},
             }
         ),
         encoding="utf-8",
@@ -39,6 +40,9 @@ def test_local_diagnostics_success(monkeypatch, tmp_path) -> None:
         media_enabled=True,
         media_workflow=str(workflow),
         media_output_dir=str(tmp_path / "generated"),
+        media_reference_enabled=True,
+        media_reference_node="12",
+        media_reference_input_key="image",
     )
 
     results = run_diagnostics(settings, timeout=0.1)
@@ -76,3 +80,46 @@ def test_local_diagnostics_reports_missing_model_and_nodes(monkeypatch, tmp_path
     assert by_name["ComfyUI-Workflow"].ok is False
     assert "7" in by_name["ComfyUI-Workflow"].detail
     assert "3" in by_name["ComfyUI-Workflow"].detail
+
+
+def test_local_diagnostics_reports_bad_reference_input(monkeypatch, tmp_path) -> None:
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text(
+        json.dumps(
+            {
+                "6": {"inputs": {"text": "positive"}},
+                "7": {"inputs": {"text": "negative"}},
+                "3": {"inputs": {"seed": 1}},
+                "12": {"inputs": {"wrong": "example.png"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get(url: str, timeout: float):
+        request = httpx.Request("GET", url)
+        if url.endswith("/api/tags"):
+            return httpx.Response(
+                200,
+                request=request,
+                json={"models": [{"name": "local-model"}]},
+            )
+        if url.endswith("/system_stats"):
+            return httpx.Response(200, request=request, json={})
+        raise AssertionError(url)
+
+    monkeypatch.setattr("app.diagnostics.httpx.get", fake_get)
+    settings = AppSettings(
+        model_name="local-model",
+        media_enabled=True,
+        media_workflow=str(workflow),
+        media_output_dir=str(tmp_path / "generated"),
+        media_reference_enabled=True,
+        media_reference_node="12",
+        media_reference_input_key="image",
+    )
+
+    results = run_diagnostics(settings, timeout=0.1)
+    by_name = {result.name: result for result in results}
+    assert by_name["ComfyUI-Workflow"].ok is False
+    assert "image" in by_name["ComfyUI-Workflow"].detail
