@@ -8,15 +8,23 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from app.backup import BackupError, PENDING_RESTORE_DIR, create_backup, stage_restore
+from app.backup import BackupError, PENDING_RESTORE_DIR, create_backup
+from app.backup_crypto import (
+    create_encrypted_backup,
+    is_encrypted_backup,
+    stage_portable_restore,
+)
 
 
 class BackupWorker(QThread):
@@ -29,24 +37,40 @@ class BackupWorker(QThread):
         path: str,
         *,
         include_media: bool = True,
+        encrypted: bool = False,
+        passphrase: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.mode = mode
         self.path = path
         self.include_media = include_media
+        self.encrypted = encrypted
+        self.passphrase = passphrase
 
     def run(self) -> None:
         try:
             if self.mode == "export":
-                result = create_backup(self.path, include_media=self.include_media)
+                if self.encrypted:
+                    result = create_encrypted_backup(
+                        self.path,
+                        self.passphrase,
+                        include_media=self.include_media,
+                    )
+                else:
+                    result = create_backup(self.path, include_media=self.include_media)
             elif self.mode == "restore":
-                result = stage_restore(self.path)
+                result = stage_portable_restore(
+                    self.path,
+                    passphrase=self.passphrase or None,
+                )
             else:
                 raise BackupError(f"Unknown backup operation: {self.mode}")
         except Exception as exc:  # UI boundary: never crash the settings window
             self.failed.emit(str(exc))
             return
+        finally:
+            self.passphrase = ""
         self.completed.emit(result)
 
 
@@ -60,8 +84,8 @@ class BackupWidget(QWidget):
         self._worker: BackupWorker | None = None
 
         intro = QLabel(
-            "Backups bleiben lokal. Beim Export wird eine konsistente SQLite-Kopie erstellt; "
-            "optional werden bereits erzeugte Medien aus der lokalen Medienhistorie mitgenommen."
+            "Backups bleiben lokal. Standardmäßig wird ein passwortgeschützter, authentifiziert "
+            "verschlüsselter .laicb-Container erstellt; optional werden erzeugte Medien mitgenommen."
         )
         intro.setWordWrap(True)
 
@@ -74,6 +98,25 @@ class BackupWidget(QWidget):
 
         self.include_media = QCheckBox("Lokale Medien aus der Historie ins Backup aufnehmen")
         self.include_media.setChecked(True)
+        self.encrypt_backup = QCheckBox("Backup verschlüsseln (empfohlen)")
+        self.encrypt_backup.setChecked(True)
+
+        self.passphrase = QLineEdit()
+        self.passphrase.setEchoMode(QLineEdit.EchoMode.Password)
+        self.passphrase.setPlaceholderText("mindestens 8 Zeichen; wird nicht gespeichert")
+        self.confirm_passphrase = QLineEdit()
+        self.confirm_passphrase.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_passphrase.setPlaceholderText("Backup-Passphrase wiederholen")
+
+        encryption_form = QFormLayout()
+        encryption_form.addRow("Backup-Passphrase", self.passphrase)
+        encryption_form.addRow("Bestätigung", self.confirm_passphrase)
+
+        crypto_note = QLabel(
+            "Die Backup-Passphrase wird nicht gespeichert und ist unabhängig von der App-Sperre. "
+            "Ohne sie kann ein verschlüsseltes Backup nicht wiederhergestellt werden."
+        )
+        crypto_note.setWordWrap(True)
 
         self.export_button = QPushButton("Backup exportieren …")
         self.import_button = QPushButton("Backup importieren …")
@@ -90,15 +133,27 @@ class BackupWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
         layout.addWidget(self.include_media)
+        layout.addWidget(self.encrypt_backup)
+        layout.addLayout(encryption_form)
+        layout.addWidget(crypto_note)
         layout.addLayout(buttons)
         layout.addWidget(restore_note)
         layout.addWidget(self.status)
         layout.addStretch(1)
 
+        self.encrypt_backup.toggled.connect(self._encryption_toggled)
         self.export_button.clicked.connect(self.export_backup)
         self.import_button.clicked.connect(self.import_backup)
         self.discard_button.clicked.connect(self.discard_pending_restore)
+        self._encryption_toggled(True)
         self._refresh_pending_status()
+
+    def _encryption_toggled(self, enabled: bool) -> None:
+        self.passphrase.setEnabled(enabled)
+        self.confirm_passphrase.setEnabled(enabled)
+        if not enabled:
+            self.passphrase.clear()
+            self.confirm_passphrase.clear()
 
     def _refresh_pending_status(self) -> None:
         pending = PENDING_RESTORE_DIR / "restore.json"
@@ -114,6 +169,10 @@ class BackupWidget(QWidget):
     def _set_busy(self, busy: bool, text: str = "") -> None:
         self.export_button.setEnabled(not busy)
         self.import_button.setEnabled(not busy)
+        self.include_media.setEnabled(not busy)
+        self.encrypt_backup.setEnabled(not busy)
+        self.passphrase.setEnabled(not busy and self.encrypt_backup.isChecked())
+        self.confirm_passphrase.setEnabled(not busy and self.encrypt_backup.isChecked())
         self.discard_button.setEnabled(
             not busy and (PENDING_RESTORE_DIR / "restore.json").exists()
         )
@@ -123,20 +182,55 @@ class BackupWidget(QWidget):
     def export_backup(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
-        default_name = f"local-ai-companion-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+
+        encrypted = self.encrypt_backup.isChecked()
+        secret = ""
+        if encrypted:
+            secret = self.passphrase.text()
+            if len(secret) < 8:
+                QMessageBox.warning(
+                    self,
+                    "Backup-Verschlüsselung",
+                    "Bitte eine Backup-Passphrase mit mindestens 8 Zeichen eingeben.",
+                )
+                return
+            if secret != self.confirm_passphrase.text():
+                QMessageBox.warning(
+                    self,
+                    "Backup-Verschlüsselung",
+                    "Die beiden Backup-Passphrasen stimmen nicht überein.",
+                )
+                return
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        suffix = ".laicb" if encrypted else ".zip"
+        default_name = f"local-ai-companion-{stamp}{suffix}"
+        file_filter = (
+            "Verschlüsseltes Companion-Backup (*.laicb)"
+            if encrypted
+            else "ZIP-Backup (*.zip)"
+        )
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Lokales Backup speichern",
             default_name,
-            "ZIP-Backup (*.zip)",
+            file_filter,
         )
         if not path:
             return
+        self.passphrase.clear()
+        self.confirm_passphrase.clear()
         self._start_worker(
             "export",
             path,
             include_media=self.include_media.isChecked(),
-            status="Erstelle konsistentes lokales Backup …",
+            encrypted=encrypted,
+            passphrase=secret,
+            status=(
+                "Erstelle und verschlüssele lokales Backup …"
+                if encrypted
+                else "Erstelle konsistentes lokales Backup …"
+            ),
         )
 
     def import_backup(self) -> None:
@@ -146,10 +240,30 @@ class BackupWidget(QWidget):
             self,
             "Lokales Backup auswählen",
             "",
-            "ZIP-Backup (*.zip);;Alle Dateien (*)",
+            "Companion-Backups (*.laicb *.zip);;Verschlüsselt (*.laicb);;ZIP-Backup (*.zip);;Alle Dateien (*)",
         )
         if not path:
             return
+
+        secret = ""
+        encrypted = is_encrypted_backup(path)
+        if encrypted:
+            secret, accepted = QInputDialog.getText(
+                self,
+                "Verschlüsseltes Backup",
+                "Backup-Passphrase:",
+                QLineEdit.EchoMode.Password,
+            )
+            if not accepted:
+                return
+            if not secret:
+                QMessageBox.warning(
+                    self,
+                    "Verschlüsseltes Backup",
+                    "Für dieses Backup ist eine Passphrase erforderlich.",
+                )
+                return
+
         answer = QMessageBox.question(
             self,
             "Backup vormerken",
@@ -161,7 +275,13 @@ class BackupWidget(QWidget):
         self._start_worker(
             "restore",
             path,
-            status="Prüfe Backup und bereite nicht-destruktive Wiederherstellung vor …",
+            encrypted=encrypted,
+            passphrase=secret,
+            status=(
+                "Entschlüssele und prüfe Backup …"
+                if encrypted
+                else "Prüfe Backup und bereite nicht-destruktive Wiederherstellung vor …"
+            ),
         )
 
     def discard_pending_restore(self) -> None:
@@ -186,6 +306,8 @@ class BackupWidget(QWidget):
         path: str,
         *,
         include_media: bool = True,
+        encrypted: bool = False,
+        passphrase: str = "",
         status: str,
     ) -> None:
         self._set_busy(True, status)
@@ -193,6 +315,8 @@ class BackupWidget(QWidget):
             mode,
             path,
             include_media=include_media,
+            encrypted=encrypted,
+            passphrase=passphrase,
             parent=self,
         )
         worker.completed.connect(self._completed)
@@ -206,7 +330,8 @@ class BackupWidget(QWidget):
         if worker is None:
             return
         if worker.mode == "export":
-            self.status.setText(f"Backup gespeichert: {Path(str(result))}")
+            label = "Verschlüsseltes Backup" if worker.encrypted else "Backup"
+            self.status.setText(f"{label} gespeichert: {Path(str(result))}")
         else:
             self.status.setText(
                 "Backup geprüft und vorgemerkt. Bitte die App neu starten, um den Stand zu aktivieren."
@@ -216,7 +341,7 @@ class BackupWidget(QWidget):
                 self,
                 "Wiederherstellung vorgemerkt",
                 "Beim nächsten App-Start wird zuerst der aktuelle Datenbankstand als pre_restore-Backup gesichert. "
-                "Danach wird der importierte Stand aktiviert."
+                "Danach wird der importierte Stand aktiviert.",
             )
 
     def _failed(self, error: str) -> None:
@@ -229,5 +354,8 @@ class BackupWidget(QWidget):
         if worker is not None:
             worker.deleteLater()
         self._set_busy(False)
-        if not (PENDING_RESTORE_DIR / "restore.json").exists() and not self.status.text().startswith("Backup gespeichert"):
+        if (
+            not (PENDING_RESTORE_DIR / "restore.json").exists()
+            and "Backup" not in self.status.text()
+        ):
             self._refresh_pending_status()
