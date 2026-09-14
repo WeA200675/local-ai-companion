@@ -12,8 +12,11 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
+from app.ai.look_presets import LookPresetRepository
 from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
+from app.ai.scene_mixer import SceneMixerRepository
+from app.ai.session_arcs import SessionArcRepository
 from app.ai.variety import VarietyRepository
 from app.backup import BackupError, apply_pending_restore
 from app.media.comfyui import ComfyUIClient
@@ -28,6 +31,7 @@ from app.ui.backup import BackupWidget
 from app.ui.character_studio import CharacterStudio
 from app.ui.context_inspector import ContextInspectorWidget
 from app.ui.conversations import ConversationsWidget
+from app.ui.creative_variety import CreativeVarietyWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
 from app.ui.mode_chat import ModeAwareChatWidget
@@ -58,6 +62,9 @@ class MainWindow(QMainWindow):
         self.conversations_repository = ConversationRepository(self.store)
         self.chat_store = ConversationStateFacade(self.store, self.conversations_repository)
         self.variety_repository = VarietyRepository(self.store)
+        self.look_repository = LookPresetRepository(self.store)
+        self.arc_repository = SessionArcRepository(self.store)
+        self.mixer_repository = SceneMixerRepository(self.store)
 
         self.model, self.media_service = self._build_services(self.settings)
         self.session_modes = SessionModesWidget(self.store)
@@ -77,6 +84,12 @@ class MainWindow(QMainWindow):
             conversation_repository=self.conversations_repository,
             variety_repository=self.variety_repository,
             variety_card=self.variety_repository.active(active_conversation_id),
+            look_repository=self.look_repository,
+            look_preset=self.look_repository.active(active_conversation_id),
+            arc_repository=self.arc_repository,
+            active_arc=self.arc_repository.active(active_conversation_id),
+            mixer_repository=self.mixer_repository,
+            scene_mix=self.mixer_repository.active(active_conversation_id),
         )
         self.conversations_widget = ConversationsWidget(
             self.conversations_repository,
@@ -84,6 +97,12 @@ class MainWindow(QMainWindow):
         )
         self.variety_widget = VarietyWidget(
             self.variety_repository,
+            active_conversation_id,
+        )
+        self.creative_variety = CreativeVarietyWidget(
+            self.look_repository,
+            self.arc_repository,
+            self.mixer_repository,
             active_conversation_id,
         )
         self.context_inspector = ContextInspectorWidget(self.store, self.chat)
@@ -123,6 +142,18 @@ class MainWindow(QMainWindow):
         self.variety_widget.active_card_changed.connect(
             lambda _card: self.context_inspector.refresh()
         )
+        self.creative_variety.look_changed.connect(self.chat.set_look_preset)
+        self.creative_variety.look_changed.connect(
+            lambda _look: self.context_inspector.refresh()
+        )
+        self.creative_variety.arc_changed.connect(self.chat.set_active_arc)
+        self.creative_variety.arc_changed.connect(
+            lambda _arc: self.context_inspector.refresh()
+        )
+        self.creative_variety.scene_mix_changed.connect(self.chat.set_scene_mix)
+        self.creative_variety.scene_mix_changed.connect(
+            lambda _mix: self.context_inspector.refresh()
+        )
         self.chat.memory_changed.connect(self.memory_lab.refresh)
         self.chat.memory_changed.connect(self.context_inspector.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
@@ -139,6 +170,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.chat, "Chat")
         self.tabs.addTab(self.conversations_widget, "Unterhaltungen")
         self.tabs.addTab(self.variety_widget, "Impulse")
+        self.tabs.addTab(self.creative_variety, "Abwechslung")
         self.tabs.addTab(self.context_inspector, "Kontext")
         self.tabs.addTab(self.session_modes, "Session-Modi")
         self.tabs.addTab(self.scene_presets, "Szenen")
@@ -285,6 +317,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Unterhaltung", str(exc))
             return
         self.variety_widget.set_conversation(conversation_id)
+        self.creative_variety.set_conversation(conversation_id)
         self.context_inspector.refresh()
 
     def _persona_changed(self, persona: PersonaState) -> None:
