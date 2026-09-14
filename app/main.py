@@ -14,6 +14,7 @@ from app.memory.store import StateStore
 from app.settings import AppSettings
 from app.ui.chat import ChatWidget
 from app.ui.media_history import MediaHistoryWidget
+from app.ui.memory_lab import MemoryLab
 from app.ui.persona_lab import PersonaLab
 from app.ui.settings import SettingsWidget
 
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
             persona=self.persona,
             preference_tags=preference_tags,
         )
+        self.memory_lab = MemoryLab(self.store)
         self.media_history = MediaHistoryWidget(
             self.store,
             limit=self.settings.media_history_limit,
@@ -56,6 +58,7 @@ class MainWindow(QMainWindow):
 
         self.persona_lab.persona_changed.connect(self._persona_changed)
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
+        self.chat.memory_changed.connect(self.memory_lab.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
         self.media_history.feedback_changed.connect(
             self.settings_widget._refresh_preference_summary
@@ -65,6 +68,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self.chat, "Chat")
         tabs.addTab(self.persona_lab, "Persona Lab")
+        tabs.addTab(self.memory_lab, "Memory")
         tabs.addTab(self.media_history, "Medien")
         tabs.addTab(self.settings_widget, "Einstellungen")
         self.setCentralWidget(tabs)
