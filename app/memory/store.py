@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 from app.ai.model import ChatMessage
 from app.ai.persona import PersonaState
 from app.media.continuity import CharacterProfile
+from app.media.preferences import VisualPreferenceProfile
 from app.memory.database import Base
 from app.settings import AppSettings
 
@@ -158,6 +159,18 @@ class StateStore:
             self._character_state_key(profile.key), profile.model_dump_json()
         )
 
+    def load_visual_preferences(self) -> VisualPreferenceProfile:
+        payload = self._load_app_state("visual_preferences")
+        if payload is None:
+            return VisualPreferenceProfile()
+        try:
+            return VisualPreferenceProfile.model_validate_json(payload)
+        except ValueError:
+            return VisualPreferenceProfile()
+
+    def save_visual_preferences(self, profile: VisualPreferenceProfile) -> None:
+        self._save_app_state("visual_preferences", profile.model_dump_json())
+
     def record_learning_event(
         self,
         *,
@@ -244,9 +257,38 @@ class StateStore:
             if row is None:
                 raise KeyError(f"Media event {media_id} not found")
             old_feedback = row.feedback
+            if old_feedback == feedback:
+                return
             row.feedback = feedback
 
-            if not row.continuity_key or old_feedback == feedback:
+            try:
+                intent = json.loads(row.intent_json)
+            except ValueError:
+                intent = {}
+            if not isinstance(intent, dict):
+                intent = {}
+
+            visual_row = session.get(AppStateRow, "visual_preferences")
+            if visual_row is None:
+                visual = VisualPreferenceProfile()
+            else:
+                try:
+                    visual = VisualPreferenceProfile.model_validate_json(visual_row.value_json)
+                except ValueError:
+                    visual = VisualPreferenceProfile()
+
+            if old_feedback in {"positive", "negative"}:
+                visual.adjust(intent, old_feedback, amount=-1)
+            if feedback in {"positive", "negative"}:
+                visual.adjust(intent, feedback, amount=1)
+
+            visual_json = visual.model_dump_json()
+            if visual_row is None:
+                session.add(AppStateRow(key="visual_preferences", value_json=visual_json))
+            else:
+                visual_row.value_json = visual_json
+
+            if not row.continuity_key:
                 return
 
             state_key = self._character_state_key(row.continuity_key)
