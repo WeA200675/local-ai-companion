@@ -25,7 +25,7 @@ class MediaResult:
 
 
 class MediaService:
-    """Coordinates local visual planning, continuity memory and generation."""
+    """Coordinates local visual planning, preference memory and generation."""
 
     def __init__(
         self,
@@ -48,6 +48,22 @@ class MediaService:
     def close(self) -> None:
         self.backend.close()
 
+    def _visual_cues(self, limit: int = 8) -> tuple[list[str], list[str]]:
+        if self.store is None:
+            return [], []
+        profile = self.store.load_visual_preferences()
+        liked = [
+            cue
+            for cue in profile.top_liked(limit * 2)
+            if profile.liked.get(cue, 0) > profile.disliked.get(cue, 0)
+        ][:limit]
+        disliked = [
+            cue
+            for cue in profile.top_disliked(limit * 2)
+            if profile.disliked.get(cue, 0) > profile.liked.get(cue, 0)
+        ][:limit]
+        return liked, disliked
+
     def plan(
         self,
         *,
@@ -60,6 +76,7 @@ class MediaService:
             return MediaIntent(generate=False, reason="media backend disabled")
 
         tags = [tag.strip() for tag in preference_tags if tag.strip()]
+        liked_cues, disliked_cues = self._visual_cues()
         planner_prompt = f"""You are the visual director for a private local adult companion app.
 Return exactly one JSON object matching this schema:
 {{
@@ -76,6 +93,7 @@ Return exactly one JSON object matching this schema:
 
 Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion is important.
 Keep every depicted person clearly adult. Visuals may be provocative, fetish-inspired, dominant, teasing, sensual, or dark, but do not plan graphic sexual acts, genital-focused imagery, minors, coercive violence, gore, or injury.
+Use historical image feedback as a soft style preference only; the user's current request and scene context take priority.
 When the recurring companion character is depicted and continuity is enabled, use continuity_key "{self.settings.continuity_key}". Otherwise use null.
 Do not include prose outside the JSON object."""
         context = (
@@ -85,7 +103,9 @@ Do not include prose outside the JSON object."""
             f"Teasing: {persona.teasing.current:.2f}\n"
             f"Creativity: {persona.creativity.current:.2f}\n"
             f"Visual continuity enabled: {self.settings.continuity_enabled}\n"
-            f"Preference tags: {', '.join(tags[:24]) if tags else 'none'}\n\n"
+            f"Preference tags: {', '.join(tags[:24]) if tags else 'none'}\n"
+            f"Historically liked visual cues: {', '.join(liked_cues) if liked_cues else 'none yet'}\n"
+            f"Historically disliked visual cues: {', '.join(disliked_cues) if disliked_cues else 'none yet'}\n\n"
             f"User message:\n{user_text}\n\n"
             f"Companion reply:\n{assistant_text}"
         )
@@ -120,6 +140,12 @@ Do not include prose outside the JSON object."""
             return None
 
         positive, negative = build_visual_prompt(intent, persona, preference_tags)
+        liked_cues, disliked_cues = self._visual_cues(limit=6)
+        if liked_cues:
+            positive = f"{positive}, preferred visual cues: {', '.join(liked_cues)}"
+        if disliked_cues:
+            negative = f"{negative}, user-disliked visual cues: {', '.join(disliked_cues)}"
+
         continuity_key = intent.continuity_key if self.settings.continuity_enabled else None
         profile = None
         seed = None

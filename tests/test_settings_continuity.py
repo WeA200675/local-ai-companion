@@ -35,7 +35,7 @@ def test_settings_and_character_continuity_round_trip(tmp_path) -> None:
     assert second.last_media_path == "generated/example.png"
 
 
-def test_media_history_feedback_updates_character_profile(tmp_path) -> None:
+def test_media_history_feedback_updates_character_and_visual_preferences(tmp_path) -> None:
     factory = make_session_factory(tmp_path / "companion.sqlite3")
     store = StateStore(factory)
     profile = store.load_character_profile("persona-main")
@@ -46,23 +46,37 @@ def test_media_history_feedback_updates_character_profile(tmp_path) -> None:
         prompt_id="prompt-1",
         seed=profile.seed,
         continuity_key="persona-main",
-        intent={"mood": "dominant", "theme": "dark lounge"},
+        intent={
+            "mood": "dominant",
+            "theme": "dark lounge",
+            "visual_style": "cinematic noir",
+            "wardrobe": ["latex jacket", "boots"],
+        },
     )
 
     store.set_media_feedback(media_id, "positive")
     event = store.list_media_events()[0]
+    visual = store.load_visual_preferences()
     assert event["feedback"] == "positive"
     assert event["seed"] == profile.seed
     assert store.load_character_profile("persona-main").positive_feedback == 1
+    assert visual.liked["dominant"] == 1
+    assert visual.liked["cinematic noir"] == 1
+    assert visual.liked["latex jacket"] == 1
 
     store.set_media_feedback(media_id, "negative")
     changed = store.load_character_profile("persona-main")
+    visual = store.load_visual_preferences()
     assert changed.positive_feedback == 0
     assert changed.negative_feedback == 1
+    assert "dominant" not in visual.liked
+    assert visual.disliked["dominant"] == 1
 
     store.set_media_feedback(media_id, None)
     cleared = store.load_character_profile("persona-main")
+    visual = store.load_visual_preferences()
     assert cleared.negative_feedback == 0
+    assert "dominant" not in visual.disliked
 
 
 def test_trait_learning_respects_bounds_and_rate() -> None:

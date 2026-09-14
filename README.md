@@ -2,7 +2,7 @@
 
 Private-first local desktop companion with configurable persona, controlled learning, non-destructive snapshots, persistent chat history, and a local media pipeline.
 
-## Current v0.1.0-alpha status
+## Current v0.2.0-alpha status
 
 Implemented:
 
@@ -21,8 +21,10 @@ Implemented:
 - Character/seed continuity memory for recurring generated companion visuals
 - Inline preview for generated images, GIFs, and short videos
 - Persistent local media history with per-image positive/negative feedback
+- Local visual preference learning from image feedback
 - In-app configuration for model endpoint, ComfyUI workflow, node ids, output path, continuity, and history limits
-- Automated tests for model requests, persistence, learning, snapshots, media workflow injection, settings, continuity, and media feedback
+- Local diagnostics for the Ollama endpoint, selected model, ComfyUI endpoint, workflow node ids, and media output directory
+- Automated tests for model requests, persistence, learning, snapshots, media workflow injection, settings, continuity, diagnostics, and media feedback
 
 ## Privacy model
 
@@ -70,7 +72,7 @@ Tests:
 pytest
 ```
 
-## In-app settings
+## In-app settings and diagnostics
 
 The **Einstellungen** tab is the preferred way to configure the app after first launch. It stores settings locally in SQLite and can reconfigure the local backends without editing source code.
 
@@ -84,6 +86,8 @@ Configurable values include:
 - visual character continuity on/off and continuity key
 - automatic learning snapshots
 - media-history size
+
+The **Lokale Verbindungen testen** button performs short local-only checks. It verifies that the configured language model is visible through the local model endpoint, validates the selected ComfyUI workflow and node ids, checks the ComfyUI endpoint when media is enabled, and confirms that the media output directory is writable.
 
 Environment variables remain available as first-run defaults, for example:
 
@@ -123,19 +127,24 @@ Media generation is optional. Without an enabled workflow, the app behaves as a 
 3. Export the workflow in **API format** to a local JSON file.
 4. Select that file in the app's Settings tab.
 5. Configure the node ids containing the positive prompt, negative prompt, and seed.
-6. Enable local media generation.
+6. Run the local diagnostics.
+7. Enable local media generation.
 
 After each assistant reply, the local language model can decide whether a visual adds something to the scene. If so, it produces a structured media intent, the visual prompt compiler converts that intent into backend-neutral prompts, and the configured ComfyUI workflow generates the file locally. The result is shown inline in the desktop UI and added to the local Media History tab.
 
 The media planner and prompt compiler keep depicted people clearly adult and the reference pipeline is designed for provocative/fetish-inspired but non-graphic visual output.
 
-## Character continuity
+## Character continuity and visual learning
 
 When a generated scene depicts the recurring companion character, the planner can attach a continuity key. The app stores a local character profile for that key with a stable seed and continuity prompt. Future generations reuse those values so the character has a better chance of remaining visually recognizable across sessions.
 
-This is intentionally backend-neutral. A later version can extend the same character profile with reference-image embeddings, LoRAs, IP-Adapter/ControlNet state, or other local identity-preservation methods without changing the chat/persona layer.
+The Media History tab records the generated file, seed, intent, continuity key, and user feedback. Image feedback is converted into a separate, auditable visual-preference profile. The app remembers cues such as mood, theme, visual style, and wardrobe that repeatedly receive positive or negative feedback.
 
-The Media History tab records the generated file, seed, intent, continuity key, and user feedback. Positive/negative image feedback is also associated with the corresponding continuity profile for future media-learning work.
+Those learned visual cues are then fed back into future local media planning and prompt compilation as soft preferences. Current scene context and the user's current request still take priority, so this preference memory nudges rather than hard-locks future visuals.
+
+The Settings tab shows a compact summary of currently learned preferred and avoided visual cues. Removing or changing an image rating also reverses its contribution to the preference profile.
+
+This continuity layer is intentionally backend-neutral. A later version can extend the same character profile with reference-image embeddings, LoRAs, IP-Adapter/ControlNet state, or other local identity-preservation methods without changing the chat/persona layer.
 
 ## Persona and snapshots
 
@@ -159,13 +168,14 @@ This means a rollback can itself be undone later.
 
 ```text
 app/
-├── ai/       persona state, prompt compilation, local model adapter, learning analyzer
-├── memory/   SQLite chat/state storage, settings, media history, learning audit, snapshots
-├── media/    media intent, visual prompting, continuity profiles, ComfyUI adapter/service
-├── ui/       Chat, Persona Lab, Media History, Settings, inline media preview
+├── ai/          persona state, prompt compilation, local model adapter, learning analyzer
+├── memory/      SQLite chat/state storage, settings, media history, learning audit, snapshots
+├── media/       media intent, visual preferences, continuity profiles, ComfyUI adapter/service
+├── ui/          Chat, Persona Lab, Media History, Settings, inline media preview
+├── diagnostics.py
 └── settings.py
 ```
 
 ## Versioning
 
-Application releases use Semantic Versioning. Persona state is versioned independently through immutable snapshots. Model choice, media workflows, continuity profiles, media feedback, and generated files are local runtime state rather than repository content.
+Application releases use Semantic Versioning. Persona state is versioned independently through immutable snapshots. Model choice, media workflows, continuity profiles, visual preference memory, media feedback, and generated files are local runtime state rather than repository content.
