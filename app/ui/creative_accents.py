@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -275,3 +276,44 @@ class AntiRepetitionWidget(QWidget):
     def set_conversation(self, conversation_id: str) -> None:
         self.conversation_id = conversation_id
         self.refresh()
+
+
+class CreativeAccentsPanel(QWidget):
+    mood_changed = Signal(object)
+    detail_changed = Signal(object)
+    anti_repetition_changed = Signal()
+
+    def __init__(
+        self,
+        moods: MoodGradeRepository,
+        details: DetailAccentRepository,
+        anti_repetition: AntiRepetitionRepository,
+        conversation_id: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.conversation_id = conversation_id
+        self.moods = MoodGradeWidget(moods, conversation_id)
+        self.details = DetailAccentWidget(details, conversation_id)
+        self.anti_repetition = AntiRepetitionWidget(anti_repetition, conversation_id)
+
+        tabs = QTabWidget()
+        tabs.addTab(self.moods, "Mood-Grading")
+        tabs.addTab(self.details, "Details & Props")
+        tabs.addTab(self.anti_repetition, "Anti-Wiederholung")
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(tabs)
+
+        self.moods.changed.connect(self.mood_changed)
+        self.details.changed.connect(self.detail_changed)
+        self.anti_repetition.config_changed.connect(self.anti_repetition_changed)
+
+    def refresh_from_repositories(self) -> None:
+        self.moods.set_conversation(self.conversation_id)
+        self.details.set_conversation(self.conversation_id)
+        self.anti_repetition.set_conversation(self.conversation_id)
+
+    def set_conversation(self, conversation_id: str) -> None:
+        self.conversation_id = conversation_id
+        self.refresh_from_repositories()
