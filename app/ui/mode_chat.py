@@ -10,6 +10,7 @@ from app.ai.scene_presets import ScenePreset
 from app.ai.session_arcs import ActiveArc, SessionArcRepository
 from app.ai.session_modes import SessionMode
 from app.ai.variety import VarietyCard, VarietyRepository
+from app.ai.visual_motifs import VisualMotif, VisualMotifRepository
 from app.memory.conversations import ConversationRepository
 from app.memory.core_memory import CoreMemoryRepository
 from app.ui.chat import ChatWidget, MediaWorker
@@ -34,6 +35,8 @@ class ModeAwareChatWidget(ChatWidget):
         active_arc: ActiveArc | None = None,
         mixer_repository: SceneMixerRepository | None = None,
         scene_mix: SceneMix | None = None,
+        motif_repository: VisualMotifRepository | None = None,
+        visual_motif: VisualMotif | None = None,
         creative_director: CreativeDirector | None = None,
         **kwargs,
     ) -> None:
@@ -48,6 +51,8 @@ class ModeAwareChatWidget(ChatWidget):
         self.active_arc = active_arc
         self.mixer_repository = mixer_repository
         self.scene_mix = scene_mix
+        self.motif_repository = motif_repository
+        self.visual_motif = visual_motif
         self.creative_director = creative_director
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
@@ -96,6 +101,13 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Scene Mixer: {mix.title}")
 
+    def set_visual_motif(self, motif: VisualMotif | None) -> None:
+        self.visual_motif = motif.model_copy(deep=True) if motif is not None else None
+        if motif is None:
+            self.status.setText("Visual-Motiv: Basis")
+        else:
+            self.status.setText(f"Visual-Motiv: {motif.name}")
+
     def refresh_creative_overlays(self) -> None:
         if self.conversations is None:
             return
@@ -108,6 +120,8 @@ class ModeAwareChatWidget(ChatWidget):
             self.active_arc = self.arc_repository.active(conversation_id)
         if self.mixer_repository is not None:
             self.scene_mix = self.mixer_repository.active(conversation_id)
+        if self.motif_repository is not None:
+            self.visual_motif = self.motif_repository.active(conversation_id)
 
     def set_conversation(self, conversation_id: str) -> None:
         if self.conversations is None:
@@ -148,6 +162,8 @@ class ModeAwareChatWidget(ChatWidget):
             tags.extend(self.active_arc.style_tags)
         if self.scene_mix is not None:
             tags.extend(self.scene_mix.style_tags)
+        if self.visual_motif is not None:
+            tags.extend(self.visual_motif.prompt_tags())
 
         result: list[str] = []
         seen: set[str] = set()
@@ -183,6 +199,11 @@ class ModeAwareChatWidget(ChatWidget):
         if self.scene_mix is None:
             return ""
         return self.scene_mix.prompt_text()
+
+    def _visual_motif_context(self) -> str:
+        if self.visual_motif is None:
+            return ""
+        return self.visual_motif.prompt_text()
 
     def _system_prompt(self) -> str:
         memory_notes = (
@@ -222,6 +243,7 @@ class ModeAwareChatWidget(ChatWidget):
             "variety": "Impuls",
             "arc": "Arc",
             "scene_mix": "Scene Mixer",
+            "visual_motif": "Visual-Motiv",
         }
         summary = ", ".join(labels.get(item, item) for item in result.changed)
         self.status.setText(f"Kreative Regie für nächste Antwort: {summary}")
@@ -249,6 +271,9 @@ class ModeAwareChatWidget(ChatWidget):
         mix_context = self._scene_mix_context()
         if mix_context:
             planner_parts.append(f"Temporary scene mixer layer: {mix_context}")
+        motif_context = self._visual_motif_context()
+        if motif_context:
+            planner_parts.append(f"Temporary visual motif: {motif_context}")
         planner_user_text = "\n\n".join(planner_parts)
 
         self.media_preview.setVisible(True)

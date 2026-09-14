@@ -9,6 +9,7 @@ from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.session_arcs import ActiveArc, SessionArcRepository
 from app.ai.variety import VarietyCard, VarietyRepository
+from app.ai.visual_motifs import VisualMotif, VisualMotifRepository
 from app.memory.store import StateStore
 
 DirectorIntensity = Literal["gentle", "balanced", "wild"]
@@ -25,8 +26,10 @@ class CreativeDirectorConfig(BaseModel):
     lock_variety: bool = False
     lock_arc: bool = False
     lock_scene_mix: bool = False
+    lock_visual_motif: bool = False
     favorite_look_ids: list[str] = Field(default_factory=list)
     favorite_arc_ids: list[str] = Field(default_factory=list)
+    favorite_visual_motif_ids: list[str] = Field(default_factory=list)
 
 
 class CreativeDirectorState(BaseModel):
@@ -41,6 +44,7 @@ class CreativeDirectorResult(BaseModel):
     variety: VarietyCard | None = None
     arc: ActiveArc | None = None
     scene_mix: SceneMix | None = None
+    visual_motif: VisualMotif | None = None
 
     @property
     def changed_anything(self) -> bool:
@@ -101,6 +105,19 @@ class CreativeDirectorRepository:
         config.favorite_arc_ids = values
         self.set_config(conversation_id, config)
 
+    def set_favorite_visual_motif(
+        self,
+        conversation_id: str,
+        motif_id: str,
+        favorite: bool,
+    ) -> None:
+        config = self.config(conversation_id)
+        values = [item for item in config.favorite_visual_motif_ids if item != motif_id]
+        if favorite:
+            values.append(motif_id)
+        config.favorite_visual_motif_ids = values
+        self.set_config(conversation_id, config)
+
 
 class CreativeDirector:
     """Rotate temporary creative layers without touching persona or memories.
@@ -117,12 +134,14 @@ class CreativeDirector:
         arcs: SessionArcRepository,
         mixer: SceneMixerRepository,
         variety: VarietyRepository,
+        motifs: VisualMotifRepository | None = None,
     ) -> None:
         self.repository = repository
         self.looks = looks
         self.arcs = arcs
         self.mixer = mixer
         self.variety = variety
+        self.motifs = motifs
 
     @staticmethod
     def _choose(items: list[T], rng: random.Random | random.SystemRandom) -> T:
@@ -169,9 +188,28 @@ class CreativeDirector:
         selected = self._choose(alternatives or pool, rng)
         return self.arcs.activate(conversation_id, selected.id)
 
+    def _draw_visual_motif(
+        self,
+        conversation_id: str,
+        config: CreativeDirectorConfig,
+        rng: random.Random | random.SystemRandom,
+    ) -> VisualMotif:
+        if self.motifs is None:
+            raise ValueError("Visual motif repository is not configured")
+        motifs = self.motifs.list_motifs()
+        favorite_ids = set(config.favorite_visual_motif_ids)
+        favorites = [item for item in motifs if item.id in favorite_ids]
+        pool = favorites or motifs
+        current = self.motifs.active(conversation_id)
+        alternatives = [item for item in pool if current is None or item.id != current.id]
+        selected = self._choose(alternatives or pool, rng)
+        result = self.motifs.set_active(conversation_id, selected.id)
+        assert result is not None
+        return result
+
     @staticmethod
     def _layer_count(intensity: DirectorIntensity, available: int) -> int:
-        requested = {"gentle": 1, "balanced": 2, "wild": 4}[intensity]
+        requested = {"gentle": 1, "balanced": 2, "wild": 5}[intensity]
         return min(max(0, available), requested)
 
     def apply(
@@ -193,6 +231,8 @@ class CreativeDirector:
             available.append("arc")
         if not config.lock_scene_mix:
             available.append("scene_mix")
+        if self.motifs is not None and not config.lock_visual_motif:
+            available.append("visual_motif")
 
         if automatic:
             count = self._layer_count(config.intensity, len(available))
@@ -219,6 +259,9 @@ class CreativeDirector:
                 result.changed.append(layer)
             elif layer == "scene_mix":
                 result.scene_mix = self.mixer.draw(conversation_id, rng=chooser)
+                result.changed.append(layer)
+            elif layer == "visual_motif":
+                result.visual_motif = self._draw_visual_motif(conversation_id, config, chooser)
                 result.changed.append(layer)
 
         if automatic and assistant_count is not None:
