@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ai.learning import BehaviorLearner, Feedback, LearningResult
 from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
@@ -99,6 +100,41 @@ class MediaWorker(QThread):
         self.generated.emit(str(result.path), description)
 
 
+class LearningWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        learner: BehaviorLearner,
+        *,
+        user_text: str,
+        assistant_text: str,
+        feedback: Feedback,
+        persona: PersonaState,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._learner = learner
+        self._user_text = user_text
+        self._assistant_text = assistant_text
+        self._feedback = feedback
+        self._persona = persona.model_copy(deep=True)
+
+    def run(self) -> None:
+        try:
+            result = self._learner.apply(
+                user_text=self._user_text,
+                assistant_text=self._assistant_text,
+                feedback=self._feedback,
+                persona=self._persona,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(result)
+
+
 class ChatWidget(QWidget):
     def __init__(
         self,
@@ -117,9 +153,13 @@ class ChatWidget(QWidget):
         self.preference_tags = preference_tags or []
         self.media_service = media_service
         self.on_persona_changed = on_persona_changed
+        self.learner = BehaviorLearner(model)
         self._worker: ModelWorker | None = None
         self._media_worker: MediaWorker | None = None
+        self._learning_worker: LearningWorker | None = None
         self._pending_user_text = ""
+        self._latest_user_text = ""
+        self._latest_assistant_text = ""
 
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
@@ -129,6 +169,17 @@ class ChatWidget(QWidget):
 
         self.media_preview = MediaPreview()
         self.media_preview.setVisible(bool(self.media_service and self.media_service.enabled))
+
+        self.more_button = QPushButton("👍 Mehr davon")
+        self.less_button = QPushButton("👎 Weniger davon")
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+        self.learning_label = QLabel("Feedback verändert nur nicht gesperrte Persona-Traits.")
+
+        feedback_row = QHBoxLayout()
+        feedback_row.addWidget(self.learning_label, 1)
+        feedback_row.addWidget(self.less_button)
+        feedback_row.addWidget(self.more_button)
 
         self.send_button = QPushButton("Senden")
         self.clear_button = QPushButton("Chat leeren")
@@ -142,11 +193,14 @@ class ChatWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.transcript, 1)
         layout.addWidget(self.media_preview)
+        layout.addLayout(feedback_row)
         layout.addWidget(self.input)
         layout.addLayout(button_row)
 
         self.send_button.clicked.connect(self.send_current)
         self.clear_button.clicked.connect(self.clear_chat)
+        self.more_button.clicked.connect(lambda: self._start_learning("positive"))
+        self.less_button.clicked.connect(lambda: self._start_learning("negative"))
         self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         self.send_shortcut.activated.connect(self.send_current)
 
@@ -177,6 +231,8 @@ class ChatWidget(QWidget):
             return
 
         self._pending_user_text = text
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
         self.input.clear()
         self.store.append_message("user", text)
         self._append_message(ChatMessage(role="user", content=text))
@@ -195,6 +251,10 @@ class ChatWidget(QWidget):
     def _model_completed(self, reply: str) -> None:
         self.store.append_message("assistant", reply)
         self._append_message(ChatMessage(role="assistant", content=reply))
+        self._latest_user_text = self._pending_user_text
+        self._latest_assistant_text = reply
+        self.more_button.setEnabled(True)
+        self.less_button.setEnabled(True)
         self._start_media_generation(self._pending_user_text, reply)
 
     def _model_failed(self, error: str) -> None:
@@ -260,12 +320,68 @@ class ChatWidget(QWidget):
         if self._worker is None or not self._worker.isRunning():
             self.status.setText(f"Modell: {self.model.model}")
 
+    def _start_learning(self, feedback: Feedback) -> None:
+        if not self._latest_user_text or not self._latest_assistant_text:
+            return
+        if self._learning_worker is not None and self._learning_worker.isRunning():
+            return
+
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+        self.status.setText("Persona wertet dein Feedback lokal aus …")
+        worker = LearningWorker(
+            self.learner,
+            user_text=self._latest_user_text,
+            assistant_text=self._latest_assistant_text,
+            feedback=feedback,
+            persona=self.persona,
+            parent=self,
+        )
+        worker.completed.connect(self._learning_completed)
+        worker.failed.connect(self._learning_failed)
+        worker.finished.connect(self._learning_finished)
+        self._learning_worker = worker
+        worker.start()
+
+    def _learning_completed(self, result: LearningResult) -> None:
+        self.persona = result.persona
+        self.store.save_persona(self.persona)
+        self.store.record_learning_event(
+            feedback=result.feedback,
+            deltas=result.deltas,
+            rationale=result.rationale,
+        )
+        if self.on_persona_changed is not None:
+            self.on_persona_changed(self.persona)
+        changed = [
+            f"{name} {signal:+.2f}"
+            for name, signal in result.deltas.items()
+            if abs(signal) >= 0.01
+        ]
+        summary = ", ".join(changed[:4]) if changed else "keine Trait-Änderung"
+        self.learning_label.setText(f"Gelernt: {summary}")
+        self.status.setText("Persona-Lernschritt gespeichert")
+
+    def _learning_failed(self, error: str) -> None:
+        self.learning_label.setText(f"Lernen fehlgeschlagen: {error}")
+
+    def _learning_finished(self) -> None:
+        worker = self._learning_worker
+        self._learning_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self.status.setText(f"Modell: {self.model.model}")
+
     def clear_chat(self) -> None:
         answer = QMessageBox.question(
             self,
             "Chat leeren",
-            "Nur den Chatverlauf löschen? Persona und Snapshots bleiben erhalten.",
+            "Nur den Chatverlauf löschen? Persona, Lernhistorie und Snapshots bleiben erhalten.",
         )
         if answer == QMessageBox.StandardButton.Yes:
             self.store.clear_messages()
             self.transcript.clear()
+            self._latest_user_text = ""
+            self._latest_assistant_text = ""
+            self.more_button.setEnabled(False)
+            self.less_button.setEnabled(False)
