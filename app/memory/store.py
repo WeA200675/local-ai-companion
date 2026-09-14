@@ -98,6 +98,54 @@ class StateStore:
         rows.reverse()
         return [ChatMessage(role=row.role, content=row.content) for row in rows]  # type: ignore[arg-type]
 
+    def latest_user_message(self) -> str | None:
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(ChatMessageRow)
+                .where(ChatMessageRow.role == "user")
+                .order_by(ChatMessageRow.id.desc())
+                .limit(1)
+            )
+        return row.content if row is not None else None
+
+    def latest_exchange(self) -> tuple[str, str] | None:
+        """Return the latest adjacent user/assistant pair, if one exists."""
+
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(ChatMessageRow).order_by(ChatMessageRow.id.desc()).limit(2)
+            ).all()
+        if len(rows) != 2 or rows[0].role != "assistant" or rows[1].role != "user":
+            return None
+        return rows[1].content, rows[0].content
+
+    def delete_last_assistant_message(self) -> str | None:
+        """Delete only the latest message when it is an assistant reply."""
+
+        with self._session_factory.begin() as session:
+            row = session.scalar(
+                select(ChatMessageRow).order_by(ChatMessageRow.id.desc()).limit(1)
+            )
+            if row is None or row.role != "assistant":
+                return None
+            content = row.content
+            session.delete(row)
+            return content
+
+    def replace_last_assistant_message(self, content: str) -> None:
+        """Replace the latest assistant reply, used to join continued streams."""
+
+        clean = content.strip()
+        if not clean:
+            raise ValueError("Assistant message must not be empty")
+        with self._session_factory.begin() as session:
+            row = session.scalar(
+                select(ChatMessageRow).order_by(ChatMessageRow.id.desc()).limit(1)
+            )
+            if row is None or row.role != "assistant":
+                raise KeyError("No latest assistant message to replace")
+            row.content = clean
+
     def assistant_message_count(self) -> int:
         with self._session_factory() as session:
             count = session.scalar(
