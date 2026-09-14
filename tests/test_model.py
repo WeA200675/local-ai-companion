@@ -25,7 +25,7 @@ def test_ollama_chat_builds_expected_payload() -> None:
     assert reply == "hello"
     assert captured["model"] == "test-model"
     assert captured["stream"] is False
-    assert captured["options"]["temperature"] == 0.4
+    assert captured["options"] == {"temperature": 0.4}
     assert captured["messages"] == [
         {"role": "system", "content": "System"},
         {"role": "user", "content": "Hi"},
@@ -34,7 +34,7 @@ def test_ollama_chat_builds_expected_payload() -> None:
     http_client.close()
 
 
-def test_ollama_chat_stream_yields_chunks_and_uses_streaming_payload() -> None:
+def test_ollama_chat_stream_yields_chunks_and_applies_tuning_options() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -55,6 +55,8 @@ def test_ollama_chat_stream_yields_chunks_and_uses_streaming_payload() -> None:
             [ChatMessage(role="user", content="Hi")],
             system_prompt="System",
             temperature=0.7,
+            num_ctx=16384,
+            num_predict=700,
         )
     )
 
@@ -62,8 +64,34 @@ def test_ollama_chat_stream_yields_chunks_and_uses_streaming_payload() -> None:
     assert "".join(chunks) == "Hello!"
     assert captured["model"] == "stream-model"
     assert captured["stream"] is True
-    assert captured["options"]["temperature"] == 0.7
+    assert captured["options"] == {
+        "temperature": 0.7,
+        "num_ctx": 16384,
+        "num_predict": 700,
+    }
 
+    http_client.close()
+
+
+def test_ollama_chat_omits_zero_or_missing_optional_tuning_values() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    client = OllamaClient(model="test-model", base_url="http://local", client=http_client)
+
+    client.chat(
+        [ChatMessage(role="user", content="Hi")],
+        system_prompt="System",
+        num_ctx=0,
+        num_predict=None,
+    )
+
+    assert captured["options"] == {"temperature": 0.85}
     http_client.close()
 
 
