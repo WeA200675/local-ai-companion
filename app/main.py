@@ -4,6 +4,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
+from app import __version__
 from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
 from app.media.comfyui import ComfyUIClient
@@ -20,7 +21,7 @@ from app.ui.settings import SettingsWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Local AI Companion — v0.1.0-alpha")
+        self.setWindowTitle(f"Local AI Companion — v{__version__}")
         self.resize(1120, 860)
 
         self.session_factory = make_session_factory()
