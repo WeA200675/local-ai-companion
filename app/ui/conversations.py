@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,10 +27,13 @@ class ConversationsWidget(QWidget):
     def __init__(
         self,
         repository: ConversationRepository,
+        *,
+        can_switch: Callable[[], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.repository = repository
+        self.can_switch = can_switch
         self._threads: dict[str, ConversationThread] = {}
 
         intro = QLabel(
@@ -78,6 +83,16 @@ class ConversationsWidget(QWidget):
         self.archive_button.clicked.connect(self.archive_selected)
         self.restore_button.clicked.connect(self.restore_selected)
         self.refresh()
+
+    def _allow_switch(self) -> bool:
+        if self.can_switch is None or self.can_switch():
+            return True
+        QMessageBox.information(
+            self,
+            "Unterhaltung",
+            "Während ein lokaler KI-, Medien- oder Lernjob läuft, kann die Unterhaltung nicht gewechselt werden.",
+        )
+        return False
 
     def refresh(self, select_id: str | None = None) -> None:
         active_id = self.repository.active_id()
@@ -130,6 +145,8 @@ class ConversationsWidget(QWidget):
             self.title_edit.setText(thread.title)
 
     def create_conversation(self) -> None:
+        if not self._allow_switch():
+            return
         title = self.title_edit.text().strip() or "Neue Unterhaltung"
         created = self.repository.create(title, activate=True)
         self.refresh(select_id=created.id)
@@ -147,6 +164,8 @@ class ConversationsWidget(QWidget):
         self.refresh(select_id=updated.id)
 
     def activate_selected(self) -> None:
+        if not self._allow_switch():
+            return
         thread = self._selected()
         if thread is None or thread.archived:
             return
@@ -155,6 +174,8 @@ class ConversationsWidget(QWidget):
         self.active_conversation_changed.emit(thread.id)
 
     def fork_selected(self) -> None:
+        if not self._allow_switch():
+            return
         thread = self._selected()
         if thread is None:
             return
@@ -168,6 +189,8 @@ class ConversationsWidget(QWidget):
     def archive_selected(self) -> None:
         thread = self._selected()
         if thread is None or thread.archived:
+            return
+        if thread.id == self.repository.active_id() and not self._allow_switch():
             return
         answer = QMessageBox.question(
             self,
