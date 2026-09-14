@@ -9,8 +9,11 @@ class MediaIntent(BaseModel):
     kind: Literal["image", "gif", "video"] = "image"
     mood: str = "neutral"
     theme: str = ""
+    visual_style: str = "cinematic"
+    wardrobe: list[str] = Field(default_factory=list)
     intensity: float = Field(default=0.5, ge=0.0, le=1.0)
     continuity_key: str | None = None
+    reason: str = ""
 
 
 class MediaPlanner:
