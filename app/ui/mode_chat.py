@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.ai.prompting import build_system_prompt
 from app.ai.session_modes import SessionMode
+from app.memory.core_memory import CoreMemoryRepository
 from app.ui.chat import ChatWidget, MediaWorker
 
 
@@ -11,6 +12,7 @@ class ModeAwareChatWidget(ChatWidget):
     def __init__(self, *args, session_mode: SessionMode | None = None, **kwargs) -> None:
         self.session_mode = session_mode
         super().__init__(*args, **kwargs)
+        self.core_memory = CoreMemoryRepository(self.store)
 
     def set_session_mode(self, mode: SessionMode | None) -> None:
         self.session_mode = mode.model_copy(deep=True) if mode is not None else None
@@ -35,10 +37,12 @@ class ModeAwareChatWidget(ChatWidget):
             if self.settings.adaptive_memory_enabled
             else []
         )
+        core_memory_notes = self.core_memory.active_prompt_entries(limit=12)
         return build_system_prompt(
             self._effective_persona(),
             self._effective_tags(),
             memory_notes,
+            core_memory_notes,
         )
 
     def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
