@@ -40,9 +40,9 @@ class CreativeDirectorWidget(QWidget):
         self.conversation_id = conversation_id
 
         intro = QLabel(
-            "Die kreative Regie kann temporäre Looks, Impulse, Session-Arcs und Scene-Mixer-Layer "
-            "selbstständig variieren. Sie ist standardmäßig aus, verändert weder Persona noch Memory "
-            "und respektiert alle Sperren."
+            "Die kreative Regie kann temporäre Looks, Impulse, Session-Arcs, Scene-Mixer-Layer "
+            "und visuelle Motive selbstständig variieren. Sie ist standardmäßig aus, verändert weder "
+            "Persona noch Memory und respektiert alle Sperren."
         )
         intro.setWordWrap(True)
 
@@ -53,7 +53,7 @@ class CreativeDirectorWidget(QWidget):
         self.intensity = QComboBox()
         self.intensity.addItem("Sanft — 1 Layer", "gentle")
         self.intensity.addItem("Ausgewogen — 2 Layer", "balanced")
-        self.intensity.addItem("Wild — bis zu 4 Layer", "wild")
+        self.intensity.addItem("Wild — bis zu 5 Layer", "wild")
 
         form = QFormLayout()
         form.addRow("Automatik", self.enabled)
@@ -64,21 +64,27 @@ class CreativeDirectorWidget(QWidget):
         self.lock_variety = QCheckBox("Impuls festhalten")
         self.lock_arc = QCheckBox("Session-Arc festhalten")
         self.lock_scene = QCheckBox("Scene Mixer festhalten")
+        self.lock_motif = QCheckBox("Visual-Motiv festhalten")
         lock_row = QHBoxLayout()
         lock_row.addWidget(self.lock_look)
         lock_row.addWidget(self.lock_variety)
         lock_row.addWidget(self.lock_arc)
         lock_row.addWidget(self.lock_scene)
+        lock_row.addWidget(self.lock_motif)
 
         self.favorite_look = QComboBox()
         self.favorite_arc = QComboBox()
+        self.favorite_motif = QComboBox()
         self.favorite_look_button = QPushButton("⭐ Look-Favorit umschalten")
         self.favorite_arc_button = QPushButton("⭐ Arc-Favorit umschalten")
+        self.favorite_motif_button = QPushButton("⭐ Motiv-Favorit umschalten")
         favorite_form = QFormLayout()
         favorite_form.addRow("Look-Favoriten", self.favorite_look)
         favorite_form.addRow("", self.favorite_look_button)
         favorite_form.addRow("Arc-Favoriten", self.favorite_arc)
         favorite_form.addRow("", self.favorite_arc_button)
+        favorite_form.addRow("Motiv-Favoriten", self.favorite_motif)
+        favorite_form.addRow("", self.favorite_motif_button)
 
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -94,8 +100,8 @@ class CreativeDirectorWidget(QWidget):
         action_row.addWidget(self.surprise_button)
 
         note = QLabel(
-            "Favoriten werden bei automatisch oder manuell gewürfelten Looks/Arcs bevorzugt. "
-            "Wenn keine Favoriten gesetzt sind, bleibt der gesamte Pool verfügbar. Automatische "
+            "Favoriten werden bei automatisch oder manuell gewürfelten Looks, Arcs und visuellen Motiven "
+            "bevorzugt. Wenn keine Favoriten gesetzt sind, bleibt der gesamte Pool verfügbar. Automatische "
             "Änderungen gelten jeweils für die nächste Antwort und werden im Kontext-Inspector sichtbar."
         )
         note.setWordWrap(True)
@@ -114,17 +120,25 @@ class CreativeDirectorWidget(QWidget):
         self.surprise_button.clicked.connect(self.surprise)
         self.favorite_look_button.clicked.connect(self.toggle_favorite_look)
         self.favorite_arc_button.clicked.connect(self.toggle_favorite_arc)
+        self.favorite_motif_button.clicked.connect(self.toggle_favorite_motif)
         self.refresh()
 
     def _populate_favorites(self) -> None:
         current_look = self.favorite_look.currentData()
         current_arc = self.favorite_arc.currentData()
+        current_motif = self.favorite_motif.currentData()
         self.favorite_look.clear()
         for preset in self.director.looks.list_presets():
             self.favorite_look.addItem(preset.name, preset.id)
         self.favorite_arc.clear()
         for arc in self.director.arcs.list_arcs():
             self.favorite_arc.addItem(arc.name, arc.id)
+        self.favorite_motif.clear()
+        if self.director.motifs is not None:
+            for motif in self.director.motifs.list_motifs():
+                self.favorite_motif.addItem(motif.name, motif.id)
+        self.favorite_motif.setEnabled(self.director.motifs is not None)
+        self.favorite_motif_button.setEnabled(self.director.motifs is not None)
         if current_look:
             index = self.favorite_look.findData(current_look)
             if index >= 0:
@@ -133,6 +147,10 @@ class CreativeDirectorWidget(QWidget):
             index = self.favorite_arc.findData(current_arc)
             if index >= 0:
                 self.favorite_arc.setCurrentIndex(index)
+        if current_motif:
+            index = self.favorite_motif.findData(current_motif)
+            if index >= 0:
+                self.favorite_motif.setCurrentIndex(index)
 
     def refresh(self) -> None:
         self._populate_favorites()
@@ -145,6 +163,8 @@ class CreativeDirectorWidget(QWidget):
         self.lock_variety.setChecked(config.lock_variety)
         self.lock_arc.setChecked(config.lock_arc)
         self.lock_scene.setChecked(config.lock_scene_mix)
+        self.lock_motif.setChecked(config.lock_visual_motif)
+        self.lock_motif.setEnabled(self.director.motifs is not None)
         self._render_status(config)
 
     def _render_status(self, config: CreativeDirectorConfig, message: str = "") -> None:
@@ -156,13 +176,15 @@ class CreativeDirectorWidget(QWidget):
                 ("Impuls", config.lock_variety),
                 ("Arc", config.lock_arc),
                 ("Scene Mixer", config.lock_scene_mix),
+                ("Visual-Motiv", config.lock_visual_motif),
             )
             if locked
         ]
         details = (
             f"Automatik: {auto} · Intervall: {config.interval} · Intensität: {config.intensity} · "
             f"gesperrt: {', '.join(locks) or 'nichts'} · "
-            f"Favoriten: {len(config.favorite_look_ids)} Looks / {len(config.favorite_arc_ids)} Arcs"
+            f"Favoriten: {len(config.favorite_look_ids)} Looks / {len(config.favorite_arc_ids)} Arcs / "
+            f"{len(config.favorite_visual_motif_ids)} Motive"
         )
         self.status.setText(f"{message}\n{details}".strip())
 
@@ -175,6 +197,7 @@ class CreativeDirectorWidget(QWidget):
         config.lock_variety = self.lock_variety.isChecked()
         config.lock_arc = self.lock_arc.isChecked()
         config.lock_scene_mix = self.lock_scene.isChecked()
+        config.lock_visual_motif = self.lock_motif.isChecked()
         return config
 
     def save_config(self) -> None:
@@ -195,6 +218,7 @@ class CreativeDirectorWidget(QWidget):
             "variety": "Impuls",
             "arc": "Arc",
             "scene_mix": "Scene Mixer",
+            "visual_motif": "Visual-Motiv",
         }
         changed = ", ".join(labels.get(item, item) for item in result.changed)
         config = self.repository.config(self.conversation_id)
@@ -229,6 +253,19 @@ class CreativeDirectorWidget(QWidget):
         self._render_status(
             self.repository.config(self.conversation_id),
             "Arc-Favorit hinzugefügt." if favorite else "Arc-Favorit entfernt.",
+        )
+
+    def toggle_favorite_motif(self) -> None:
+        motif_id = str(self.favorite_motif.currentData() or "")
+        if not motif_id:
+            return
+        config = self.repository.config(self.conversation_id)
+        favorite = motif_id not in set(config.favorite_visual_motif_ids)
+        self.repository.set_favorite_visual_motif(self.conversation_id, motif_id, favorite)
+        self.refresh()
+        self._render_status(
+            self.repository.config(self.conversation_id),
+            "Motiv-Favorit hinzugefügt." if favorite else "Motiv-Favorit entfernt.",
         )
 
     def set_conversation(self, conversation_id: str) -> None:
