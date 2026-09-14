@@ -38,6 +38,8 @@ class ComfyUIClient:
         positive_node: str = "6",
         negative_node: str = "7",
         seed_node: str = "3",
+        reference_node: str = "",
+        reference_input_key: str = "image",
         output_dir: str | Path = "data/generated_media",
         timeout: float = 180.0,
         poll_interval: float = 0.8,
@@ -48,6 +50,8 @@ class ComfyUIClient:
         self.positive_node = positive_node
         self.negative_node = negative_node
         self.seed_node = seed_node
+        self.reference_node = reference_node.strip()
+        self.reference_input_key = reference_input_key.strip() or "image"
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
@@ -58,6 +62,10 @@ class ComfyUIClient:
     @property
     def enabled(self) -> bool:
         return bool(self.workflow_path and self.workflow_path.exists())
+
+    @property
+    def reference_configured(self) -> bool:
+        return bool(self.reference_node and self.reference_input_key)
 
     def close(self) -> None:
         if self._owns_client:
@@ -106,12 +114,70 @@ class ComfyUIClient:
                 return
         raise ComfyUIError(f"Seed node {node_id!r} has no seed/noise_seed input")
 
-    def build_workflow(self, positive: str, negative: str, *, seed: int) -> dict[str, Any]:
+    @staticmethod
+    def _set_reference(
+        workflow: dict[str, Any],
+        node_id: str,
+        input_key: str,
+        image_name: str,
+    ) -> None:
+        try:
+            inputs = workflow[node_id]["inputs"]
+        except (KeyError, TypeError) as exc:
+            raise ComfyUIError(f"Reference node {node_id!r} is missing from workflow") from exc
+        if not isinstance(inputs, dict) or input_key not in inputs:
+            raise ComfyUIError(
+                f"Reference node {node_id!r} has no input named {input_key!r}"
+            )
+        inputs[input_key] = image_name
+
+    def build_workflow(
+        self,
+        positive: str,
+        negative: str,
+        *,
+        seed: int,
+        reference_name: str | None = None,
+    ) -> dict[str, Any]:
         workflow = self._load_workflow()
         self._set_text(workflow, self.positive_node, positive)
         self._set_text(workflow, self.negative_node, negative)
         self._set_seed(workflow, self.seed_node, seed)
+        if reference_name:
+            if not self.reference_configured:
+                raise ComfyUIError("Reference image supplied but no reference node is configured")
+            self._set_reference(
+                workflow,
+                self.reference_node,
+                self.reference_input_key,
+                reference_name,
+            )
         return workflow
+
+    def _upload_reference(self, path: Path) -> str:
+        if not path.exists() or not path.is_file():
+            raise ComfyUIError(f"Reference image does not exist: {path}")
+        try:
+            with path.open("rb") as handle:
+                response = self._client.post(
+                    f"{self.base_url}/upload/image",
+                    files={"image": (path.name, handle, "application/octet-stream")},
+                    data={"type": "input", "overwrite": "true"},
+                )
+            response.raise_for_status()
+            payload = response.json()
+        except (OSError, httpx.HTTPError, ValueError) as exc:
+            raise ComfyUIError(f"Could not upload reference image to ComfyUI: {exc}") from exc
+
+        if not isinstance(payload, dict):
+            raise ComfyUIError("ComfyUI returned an invalid reference upload response")
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ComfyUIError("ComfyUI reference upload did not return a file name")
+        subfolder = payload.get("subfolder")
+        if isinstance(subfolder, str) and subfolder.strip():
+            return f"{subfolder.strip().strip('/')}/{name.strip()}"
+        return name.strip()
 
     def generate(
         self,
@@ -119,11 +185,22 @@ class ComfyUIClient:
         negative: str,
         *,
         seed: int | None = None,
+        reference_path: str | Path | None = None,
     ) -> GeneratedMedia:
         if not self.enabled:
             raise ComfyUIError("ComfyUI media generation is not configured")
         actual_seed = seed if seed is not None else random.SystemRandom().randrange(1, 2**63 - 1)
-        workflow = self.build_workflow(positive, negative, seed=actual_seed)
+        reference_name = None
+        if reference_path is not None:
+            if not self.reference_configured:
+                raise ComfyUIError("Reference continuity is enabled but no workflow node is configured")
+            reference_name = self._upload_reference(Path(reference_path))
+        workflow = self.build_workflow(
+            positive,
+            negative,
+            seed=actual_seed,
+            reference_name=reference_name,
+        )
 
         try:
             response = self._client.post(f"{self.base_url}/prompt", json={"prompt": workflow})
