@@ -7,11 +7,13 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 from app import __version__
 from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
+from app.backup import BackupError, apply_pending_restore
 from app.media.comfyui import ComfyUIClient
 from app.media.service import MediaService
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
 from app.settings import AppSettings
+from app.ui.backup import BackupWidget
 from app.ui.chat import ChatWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
@@ -55,6 +57,7 @@ class MainWindow(QMainWindow):
             limit=self.settings.media_history_limit,
         )
         self.settings_widget = SettingsWidget(self.store, self.settings)
+        self.backup_widget = BackupWidget()
 
         self.persona_lab.persona_changed.connect(self._persona_changed)
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
@@ -71,6 +74,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.memory_lab, "Memory")
         tabs.addTab(self.media_history, "Medien")
         tabs.addTab(self.settings_widget, "Einstellungen")
+        tabs.addTab(self.backup_widget, "Backup")
         self.setCentralWidget(tabs)
 
     def _build_services(self, settings: AppSettings) -> tuple[OllamaClient, MediaService]:
@@ -143,8 +147,31 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Local AI Companion")
+
+    previous_backup = None
+    restore_error = None
+    try:
+        previous_backup = apply_pending_restore()
+    except BackupError as exc:
+        restore_error = str(exc)
+
     window = MainWindow()
     window.show()
+
+    if restore_error:
+        QMessageBox.warning(
+            window,
+            "Backup-Wiederherstellung fehlgeschlagen",
+            "Der bisherige lokale Stand wurde weiter verwendet. Die vorgemerkte Wiederherstellung wurde nicht angewendet.\n\n"
+            + restore_error,
+        )
+    elif previous_backup is not None:
+        QMessageBox.information(
+            window,
+            "Backup wiederhergestellt",
+            f"Der importierte Stand ist aktiv. Der vorherige SQLite-Stand wurde vorher gesichert unter:\n{previous_backup}",
+        )
+
     return app.exec()
 
 
