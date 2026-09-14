@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 import httpx
 
+from app.media.profiles import WorkflowProfile
+
 
 class ComfyUIError(RuntimeError):
     """Raised when the local ComfyUI backend fails."""
@@ -24,10 +26,11 @@ class GeneratedMedia:
 
 
 class ComfyUIClient:
-    """Small local ComfyUI API adapter using an exported API-format workflow.
+    """Small local ComfyUI API adapter using exported API-format workflows.
 
-    The workflow stays user-owned and local. Node ids can be configured so this
-    adapter works with different checkpoints and custom-node setups.
+    A legacy default workflow can be configured directly. Callers may also pass
+    a WorkflowProfile per generation so different local pipelines can share one
+    ComfyUI endpoint and output directory.
     """
 
     def __init__(
@@ -67,6 +70,9 @@ class ComfyUIClient:
     def reference_configured(self) -> bool:
         return bool(self.reference_node and self.reference_input_key)
 
+    def can_run_profile(self, profile: WorkflowProfile) -> bool:
+        return profile.enabled and profile.workflow_path.exists()
+
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
@@ -79,11 +85,12 @@ class ComfyUIClient:
         except httpx.HTTPError:
             return False
 
-    def _load_workflow(self) -> dict[str, Any]:
-        if not self.workflow_path:
+    def _load_workflow(self, profile: WorkflowProfile | None = None) -> dict[str, Any]:
+        path = profile.workflow_path if profile is not None else self.workflow_path
+        if not path:
             raise ComfyUIError("No ComfyUI workflow configured")
         try:
-            value = json.loads(self.workflow_path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise ComfyUIError(f"Could not load workflow: {exc}") from exc
         if not isinstance(value, dict):
@@ -131,6 +138,25 @@ class ComfyUIClient:
             )
         inputs[input_key] = image_name
 
+    def _nodes_for_profile(
+        self, profile: WorkflowProfile | None
+    ) -> tuple[str, str, str, str, str]:
+        if profile is None:
+            return (
+                self.positive_node,
+                self.negative_node,
+                self.seed_node,
+                self.reference_node,
+                self.reference_input_key,
+            )
+        return (
+            profile.positive_node,
+            profile.negative_node,
+            profile.seed_node,
+            profile.reference_node,
+            profile.reference_input_key,
+        )
+
     def build_workflow(
         self,
         positive: str,
@@ -138,20 +164,19 @@ class ComfyUIClient:
         *,
         seed: int,
         reference_name: str | None = None,
+        profile: WorkflowProfile | None = None,
     ) -> dict[str, Any]:
-        workflow = self._load_workflow()
-        self._set_text(workflow, self.positive_node, positive)
-        self._set_text(workflow, self.negative_node, negative)
-        self._set_seed(workflow, self.seed_node, seed)
+        workflow = self._load_workflow(profile)
+        positive_node, negative_node, seed_node, reference_node, reference_input = (
+            self._nodes_for_profile(profile)
+        )
+        self._set_text(workflow, positive_node, positive)
+        self._set_text(workflow, negative_node, negative)
+        self._set_seed(workflow, seed_node, seed)
         if reference_name:
-            if not self.reference_configured:
+            if not reference_node or not reference_input:
                 raise ComfyUIError("Reference image supplied but no reference node is configured")
-            self._set_reference(
-                workflow,
-                self.reference_node,
-                self.reference_input_key,
-                reference_name,
-            )
+            self._set_reference(workflow, reference_node, reference_input, reference_name)
         return workflow
 
     def _upload_reference(self, path: Path) -> str:
@@ -186,20 +211,31 @@ class ComfyUIClient:
         *,
         seed: int | None = None,
         reference_path: str | Path | None = None,
+        profile: WorkflowProfile | None = None,
     ) -> GeneratedMedia:
-        if not self.enabled:
+        if profile is not None:
+            if not self.can_run_profile(profile):
+                raise ComfyUIError(f"Workflow profile {profile.id!r} is not available")
+        elif not self.enabled:
             raise ComfyUIError("ComfyUI media generation is not configured")
+
         actual_seed = seed if seed is not None else random.SystemRandom().randrange(1, 2**63 - 1)
         reference_name = None
         if reference_path is not None:
-            if not self.reference_configured:
+            reference_node = profile.reference_node if profile is not None else self.reference_node
+            reference_input = (
+                profile.reference_input_key if profile is not None else self.reference_input_key
+            )
+            if not reference_node or not reference_input:
                 raise ComfyUIError("Reference continuity is enabled but no workflow node is configured")
             reference_name = self._upload_reference(Path(reference_path))
+
         workflow = self.build_workflow(
             positive,
             negative,
             seed=actual_seed,
             reference_name=reference_name,
+            profile=profile,
         )
 
         try:
