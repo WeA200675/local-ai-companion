@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import uuid
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from app import __version__
 
@@ -198,6 +198,8 @@ def validate_backup(path: str | Path) -> dict[str, object]:
     try:
         with ZipFile(archive_path, "r") as archive:
             return _read_manifest(archive)
+    except BadZipFile as exc:
+        raise BackupError("Selected file is not a valid ZIP backup") from exc
     except OSError as exc:
         raise BackupError(f"Could not open backup archive: {exc}") from exc
 
@@ -205,6 +207,7 @@ def validate_backup(path: str | Path) -> dict[str, object]:
 def _patch_staged_database(
     database: Path,
     media_paths: dict[int, tuple[str, str]],
+    media_output_dir: Path,
 ) -> None:
     """Rewrite restored media pointers to safe portable local destinations."""
 
@@ -227,7 +230,7 @@ def _patch_staged_database(
                     except ValueError:
                         settings = None
                     if isinstance(settings, dict):
-                        settings["media_output_dir"] = str(DEFAULT_MEDIA_DIR)
+                        settings["media_output_dir"] = str(media_output_dir)
                         connection.execute(
                             "UPDATE app_state SET value_json=? WHERE key='runtime_settings'",
                             (json.dumps(settings, ensure_ascii=False),),
@@ -269,11 +272,13 @@ def stage_restore(
     archive_path: str | Path,
     *,
     pending_dir: str | Path = PENDING_RESTORE_DIR,
+    media_target_dir: str | Path = DEFAULT_MEDIA_DIR,
 ) -> dict[str, object]:
     """Validate and stage a restore. The live database is not touched."""
 
     source = Path(archive_path).expanduser()
     pending = Path(pending_dir)
+    media_target = Path(media_target_dir)
     if pending.exists():
         shutil.rmtree(pending)
     pending.mkdir(parents=True, exist_ok=True)
@@ -308,14 +313,14 @@ def stage_restore(
                     pending_file = media_dir / final_name
                     with archive.open(member) as src, pending_file.open("wb") as dst:
                         shutil.copyfileobj(src, dst)
-                    final_path = DEFAULT_MEDIA_DIR / final_name
+                    final_path = media_target / final_name
                     original_path = str(entry.get("original_path") or "")
                     media_paths[event_id] = (original_path, str(final_path))
                     pending_media.append(
                         {"pending": str(pending_file), "final": str(final_path)}
                     )
 
-            _patch_staged_database(database_target, media_paths)
+            _patch_staged_database(database_target, media_paths, media_target)
             marker = {
                 "format": BACKUP_FORMAT,
                 "version": BACKUP_VERSION,
@@ -332,6 +337,9 @@ def stage_restore(
     except BackupError:
         shutil.rmtree(pending, ignore_errors=True)
         raise
+    except BadZipFile as exc:
+        shutil.rmtree(pending, ignore_errors=True)
+        raise BackupError("Selected file is not a valid ZIP backup") from exc
     except (OSError, KeyError, ValueError) as exc:
         shutil.rmtree(pending, ignore_errors=True)
         raise BackupError(f"Could not stage restore: {exc}") from exc
