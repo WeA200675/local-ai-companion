@@ -57,6 +57,9 @@ class MainWindow(QMainWindow):
         self.persona_lab.persona_changed.connect(self._persona_changed)
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
         self.chat.media_history_changed.connect(self.media_history.refresh)
+        self.media_history.feedback_changed.connect(
+            self.settings_widget._refresh_preference_summary
+        )
         self.settings_widget.settings_saved.connect(self._settings_saved)
 
         tabs = QTabWidget()
