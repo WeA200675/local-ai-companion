@@ -23,6 +23,7 @@ from app.privacy import PrivacyConfig, PrivacyStore
 from app.settings import AppSettings
 from app.ui.backup import BackupWidget
 from app.ui.character_studio import CharacterStudio
+from app.ui.context_inspector import ContextInspectorWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
 from app.ui.mode_chat import ModeAwareChatWidget
@@ -64,6 +65,7 @@ class MainWindow(QMainWindow):
             session_mode=self.session_modes.active_mode(),
             scene_preset=self.scene_presets.active_scene(),
         )
+        self.context_inspector = ContextInspectorWidget(self.store, self.chat)
         self.persona_lab = PersonaLab(
             store=self.store,
             session_factory=self.session_factory,
@@ -86,8 +88,15 @@ class MainWindow(QMainWindow):
         self.persona_lab.persona_changed.connect(self._persona_changed)
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
         self.session_modes.active_mode_changed.connect(self.chat.set_session_mode)
+        self.session_modes.active_mode_changed.connect(
+            lambda _mode: self.context_inspector.refresh()
+        )
         self.scene_presets.active_scene_changed.connect(self.chat.set_scene_preset)
+        self.scene_presets.active_scene_changed.connect(
+            lambda _scene: self.context_inspector.refresh()
+        )
         self.chat.memory_changed.connect(self.memory_lab.refresh)
+        self.chat.memory_changed.connect(self.context_inspector.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
         self.chat.media_history_changed.connect(self.character_studio.load_profile)
         self.media_history.feedback_changed.connect(
@@ -100,6 +109,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.chat, "Chat")
+        self.tabs.addTab(self.context_inspector, "Kontext")
         self.tabs.addTab(self.session_modes, "Session-Modi")
         self.tabs.addTab(self.scene_presets, "Szenen")
         self.tabs.addTab(self.persona_lab, "Persona Lab")
@@ -217,6 +227,7 @@ class MainWindow(QMainWindow):
                 "Einstellungen gespeichert",
                 "Ein lokaler KI-Job läuft gerade. Die neuen Backend-Einstellungen werden beim nächsten App-Start vollständig aktiv.",
             )
+            self.context_inspector.refresh()
             return
 
         old_model = self.model
@@ -228,21 +239,26 @@ class MainWindow(QMainWindow):
             new_media_service.close()
             new_model.close()
             QMessageBox.information(self, "Einstellungen gespeichert", str(exc))
+            self.context_inspector.refresh()
             return
 
         self.model = new_model
         self.media_service = new_media_service
         old_media_service.close()
         old_model.close()
+        self.context_inspector.refresh()
 
     def _persona_changed(self, persona: PersonaState) -> None:
         self.persona = persona
         self.chat.persona = persona
         if hasattr(self, "persona_lab"):
             self.persona_lab.set_persona(persona)
+        if hasattr(self, "context_inspector"):
+            self.context_inspector.refresh()
 
     def _preference_tags_changed(self, tags: list[str]) -> None:
         self.chat.preference_tags = tags
+        self.context_inspector.refresh()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
         self.store.save_persona(self.persona)
