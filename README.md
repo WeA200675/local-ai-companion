@@ -1,6 +1,6 @@
 # Local AI Companion
 
-Private-first local desktop companion with configurable persona, learning state, non-destructive snapshots, persistent chat history, and a model-agnostic local media pipeline.
+Private-first local desktop companion with configurable persona, controlled learning, non-destructive snapshots, persistent chat history, and a model-agnostic local media pipeline.
 
 ## Current v0.1.0-alpha status
 
@@ -11,12 +11,14 @@ Implemented on the bootstrap branch:
 - Persistent SQLite chat history
 - Persona traits with user-controlled values and locks
 - User-configured preference tags
+- Feedback-driven persona learning with bounded trait updates
+- Persistent learning audit trail in the Persona Lab
 - Immutable persona snapshots
 - Non-destructive restore: every restore first creates a `pre_restore` snapshot
 - Optional ComfyUI-compatible local image/GIF/video generation backend
 - Autonomous media planning after assistant replies
 - Inline preview for generated images, GIFs, and short videos
-- Automated tests for model requests, persistence, snapshots, and media workflow injection
+- Automated tests for model requests, persistence, learning, snapshots, and media workflow injection
 
 ## Privacy model
 
@@ -82,6 +84,14 @@ macOS/Linux:
 LOCAL_AI_MODEL="your-model" LOCAL_AI_URL="http://127.0.0.1:11434" python -m app.main
 ```
 
+## Controlled persona learning
+
+Each assistant response can be rated with **Mehr davon** or **Weniger davon**. A local learning analyzer proposes bounded signals for the seven persona traits. The application then applies only the changes allowed by each trait's learning rate, lock state, and user-defined bounds.
+
+This deliberately keeps learning outside the model weights. It makes behavior changes visible, auditable, and reversible instead of silently fine-tuning the underlying language model.
+
+Learning events are stored locally with the proposed trait signals and a short rationale. They are visible in the Persona Lab. Locked traits never move because of learning feedback.
+
 ## Local visual generation with ComfyUI
 
 Media generation is optional. Without a workflow configured, the app behaves as a normal local chat companion.
@@ -120,7 +130,7 @@ The workflow itself remains outside the repository so model files, custom nodes,
 
 ## Persona and snapshots
 
-The Persona Lab lets you change personality traits, lock individual traits, edit preference tags, create manual snapshots, and restore older states.
+The Persona Lab lets you change personality traits, lock individual traits, edit preference tags, inspect learning events, create manual snapshots, and restore older states.
 
 A restore is intentionally non-destructive:
 
@@ -140,10 +150,10 @@ This means a rollback can itself be undone later.
 
 ```text
 app/
-├── ai/       persona state, prompt compilation, local model adapter
-├── memory/   SQLite chat/state storage and immutable snapshots
+├── ai/       persona state, prompt compilation, local model adapter, learning analyzer
+├── memory/   SQLite chat/state storage, learning audit, immutable snapshots
 ├── media/    media intent, prompt compiler, ComfyUI adapter, generation service
-└── ui/       Chat, Persona Lab, and inline media preview
+└── ui/       Chat, Persona Lab, inline media preview
 ```
 
 ## Versioning
