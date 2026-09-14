@@ -12,6 +12,8 @@ from app.media.prompting import build_visual_prompt
 from app.memory.store import StateStore
 from app.settings import AppSettings
 
+_IMAGE_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
 
 @dataclass(frozen=True, slots=True)
 class MediaResult:
@@ -64,8 +66,17 @@ class MediaService:
         ][:limit]
         return liked, disliked
 
+    @staticmethod
+    def _usable_reference(path_value: object) -> Path | None:
+        path = Path(str(path_value or "")).expanduser()
+        if path.suffix.lower() not in _IMAGE_REFERENCE_SUFFIXES:
+            return None
+        if not path.exists() or not path.is_file():
+            return None
+        return path
+
     def _reference_path(self, continuity_key: str | None) -> Path | None:
-        """Select the newest liked local image for this recurring character."""
+        """Prefer a pinned anchor, then fall back to the newest liked local image."""
 
         if (
             not continuity_key
@@ -73,14 +84,20 @@ class MediaService:
             or self.store is None
         ):
             return None
+
+        profile = self.store.load_character_profile(continuity_key)
+        pinned = self._usable_reference(profile.reference_media_path)
+        if pinned is not None:
+            return pinned
+
         for event in self.store.list_media_events(limit=self.settings.media_history_limit):
             if event.get("continuity_key") != continuity_key:
                 continue
             if event.get("feedback") != "positive":
                 continue
-            path = Path(str(event.get("path") or "")).expanduser()
-            if path.exists() and path.is_file():
-                return path
+            fallback = self._usable_reference(event.get("path"))
+            if fallback is not None:
+                return fallback
         return None
 
     def plan(
