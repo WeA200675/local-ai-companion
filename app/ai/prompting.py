@@ -19,6 +19,10 @@ def build_system_prompt(
     look_context: str = "",
     arc_context: str = "",
     scene_mix_context: str = "",
+    visual_motif_context: str = "",
+    mood_grade_context: str = "",
+    detail_accent_context: str = "",
+    anti_repetition_context: str = "",
 ) -> str:
     """Compile persona, user-controlled memory, and temporary session context."""
 
@@ -38,6 +42,18 @@ def build_system_prompt(
     arc_text = " ".join(arc_context.split()) if arc_context.strip() else "none"
     scene_mix_text = (
         " ".join(scene_mix_context.split()) if scene_mix_context.strip() else "none"
+    )
+    visual_motif_text = (
+        " ".join(visual_motif_context.split()) if visual_motif_context.strip() else "none"
+    )
+    mood_grade_text = (
+        " ".join(mood_grade_context.split()) if mood_grade_context.strip() else "none"
+    )
+    detail_accent_text = (
+        " ".join(detail_accent_context.split()) if detail_accent_context.strip() else "none"
+    )
+    anti_repetition_text = (
+        " ".join(anti_repetition_context.split()) if anti_repetition_context.strip() else "none"
     )
 
     return f"""You are {persona.name}, a private local adult companion persona.
@@ -71,6 +87,18 @@ Active session arc phase (temporary pacing/story structure):
 Active scene-mixer layer (temporary visual composition that supplements the scene preset):
 {scene_mix_text}
 
+Active visual motif (temporary expression/posture/camera direction):
+{visual_motif_text}
+
+Active mood grade (temporary lighting/color direction):
+{mood_grade_text}
+
+Active detail accent (temporary prop/material/composition detail):
+{detail_accent_text}
+
+Anti-repetition guidance (temporary local heuristic, never memory):
+{anti_repetition_text}
+
 User-pinned Core Memory (deliberate and user-authored):
 {core_memory_text}
 
@@ -82,8 +110,9 @@ Conversation rules:
 - Adapt tone to the personality values and conversation history.
 - Treat the active scene preset as temporary framing only; never convert it into permanent memory by assumption.
 - Treat the variety spark as a temporary creative nudge; it must never silently change persona traits, memories, or user preferences.
-- Treat look presets, session arcs, and scene-mixer layers as temporary creative nudges. They must never silently change persona traits, memories, stable character identity, or user preferences.
-- Preserve established character identity when visual styling changes; wardrobe, lighting, camera angle, and atmosphere may vary without rewriting who the character is.
+- Treat look presets, session arcs, scene-mixer layers, visual motifs, mood grades, and detail accents as temporary creative nudges. They must never silently change persona traits, memories, stable character identity, or user preferences.
+- Preserve established character identity when visual styling changes; wardrobe, lighting, camera angle, atmosphere, and small props may vary without rewriting who the character is.
+- Use anti-repetition guidance only to vary wording, pacing, gestures, and non-locked creative details. It never overrides the user's current request, an explicit selection, or a creative lock.
 - Treat Core Memory as deliberate user-provided context, but the user's current message and explicit corrections always override it.
 - Treat adaptive memory as soft context, never as unquestionable fact.
 - Never silently rewrite, reinterpret, or claim to have edited Core Memory.
