@@ -27,7 +27,7 @@ from app.ai.twist_deck import TwistDeckRepository
 from app.ai.variety import VarietyRepository
 from app.ai.visual_motifs import VisualMotifRepository
 from app.backup import BackupError, apply_pending_restore
-from app.media.comfyui import ComfyUIClient
+from app.media.comfyui_runtime import VisibleResilientComfyUIClient
 from app.media.service import MediaService
 from app.memory.conversation_facade import ConversationStateFacade
 from app.memory.conversations import ConversationRepository
@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
             model=settings.model_name,
             base_url=settings.model_url,
         )
-        media_backend = ComfyUIClient(
+        media_backend = VisibleResilientComfyUIClient(
             base_url=settings.media_url,
             workflow_path=settings.workflow_path,
             positive_node=settings.media_positive_node,

@@ -264,6 +264,7 @@ class ChatWidget(QWidget):
         self._generation_mode = "new"
         self._continuation_prefix = ""
         self._last_response_incomplete = False
+        self._last_media_error = ""
 
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
@@ -668,6 +669,7 @@ class ChatWidget(QWidget):
             return
 
         self.media_preview.setVisible(True)
+        self._last_media_error = ""
         self.status.setText("KI plant optional ein lokales Bild …")
         worker = MediaWorker(
             self.media_service,
@@ -694,7 +696,14 @@ class ChatWidget(QWidget):
             self.status.setText("Kein Bild für diese Antwort nötig")
 
     def _media_failed(self, error: str) -> None:
-        self.status.setText(f"Medien-Backend: {error}")
+        self._last_media_error = error.strip() or "Unbekannter lokaler Medienfehler"
+        self.status.setText("Lokales Medium fehlgeschlagen — Details wurden angezeigt")
+        QMessageBox.warning(
+            self,
+            "Lokales Medium fehlgeschlagen",
+            self._last_media_error
+            + "\\n\\nDie Textantwort und der lokale Chat bleiben davon unberührt.",
+        )
 
     def _media_finished(self) -> None:
         worker = self._media_worker
@@ -703,7 +712,10 @@ class ChatWidget(QWidget):
             worker.deleteLater()
         if self._worker is None or not self._worker.isRunning():
             if not self._background_worker_running():
-                self.status.setText(f"Modell: {self.model.model}")
+                if self._last_media_error:
+                    self.status.setText("Lokales Medium fehlgeschlagen — ComfyUI prüfen")
+                else:
+                    self.status.setText(f"Modell: {self.model.model}")
 
     def _maybe_start_memory_learning(self, user_text: str, assistant_text: str) -> None:
         if not self.settings.adaptive_memory_enabled:

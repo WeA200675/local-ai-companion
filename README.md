@@ -170,3 +170,8 @@ app/
 ## Versioning
 
 Application releases use Semantic Versioning. Persona snapshots, adaptive memory, model choice, media workflows, continuity profiles, visual preference memory, conversation branches, temporary creative overlays, feedback, and generated files are local runtime state rather than repository content.
+
+
+### Sichtbare lokale Medienfehler
+
+Ein nicht geplantes Medium bleibt ein normaler, stiller Zustand. Wenn ComfyUI einen bereits geplanten Render dagegen nicht ausführen kann, zeigt der Chat jetzt eine konkrete lokale Diagnose an und lässt die Textantwort unberührt. Unterschieden werden Konfigurations- und Referenzprobleme, nicht erreichbare Queue/History, fehlerhafte Workflows oder Nodes, VRAM-/RAM-Mangel, Render-Timeouts und nicht ladbare Ausgaben. Queue-Aufträge werden weiterhin nie blind wiederholt.
