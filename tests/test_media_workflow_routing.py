@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 
 from app.media.planner import MediaIntent
-from app.media.profiles import WorkflowProfile, choose_workflow_profile
-from app.media.setup_assistant import inspect_for_auto_setup
+from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
+from app.media.setup_assistant import (
+    generated_catalog_path,
+    inspect_for_auto_setup,
+    save_generated_profile,
+)
 from app.media.standard_workflow import build_standard_image_workflow
 from app.media.workflow_routing import WorkflowPerformanceRepository, intent_focus_tags
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
+from app.settings import AppSettings
 
 
 def _intent(**updates) -> MediaIntent:
@@ -30,6 +35,15 @@ def _intent(**updates) -> MediaIntent:
     }
     data.update(updates)
     return MediaIntent.model_validate(data)
+
+
+def _standard_workflow(tmp_path):
+    workflow_path = tmp_path / "generated.json"
+    workflow_path.write_text(
+        json.dumps(build_standard_image_workflow("local-model.safetensors")),
+        encoding="utf-8",
+    )
+    return workflow_path
 
 
 def test_focus_tags_derive_visual_job() -> None:
@@ -136,13 +150,35 @@ def test_unrated_media_does_not_change_performance(tmp_path) -> None:
 
 
 def test_auto_setup_records_checkpoint_provenance_without_license_claim(tmp_path) -> None:
-    workflow_path = tmp_path / "generated.json"
-    workflow_path.write_text(
-        json.dumps(build_standard_image_workflow("local-model.safetensors")),
-        encoding="utf-8",
-    )
-    setup = inspect_for_auto_setup(workflow_path)
+    setup = inspect_for_auto_setup(_standard_workflow(tmp_path))
     assert setup.ready
     assert setup.profile is not None
     assert setup.profile.checkpoint_name == "local-model.safetensors"
     assert setup.profile.checkpoint_license_confirmed is False
+
+
+def test_auto_setup_records_only_explicit_license_confirmation(tmp_path) -> None:
+    workflow_path = _standard_workflow(tmp_path)
+    setup = inspect_for_auto_setup(
+        workflow_path,
+        checkpoint_license_confirmed=True,
+    )
+    assert setup.ready
+    assert setup.profile is not None
+    assert setup.profile.checkpoint_name == "local-model.safetensors"
+    assert setup.profile.checkpoint_license_confirmed is True
+
+
+def test_explicit_license_confirmation_survives_generated_catalog_roundtrip(tmp_path) -> None:
+    workflow_path = _standard_workflow(tmp_path)
+    setup = inspect_for_auto_setup(
+        workflow_path,
+        checkpoint_license_confirmed=True,
+    )
+    settings = AppSettings(media_output_dir=str(tmp_path / "generated_media"))
+    catalog_path = generated_catalog_path(settings)
+    saved = save_generated_profile(setup, catalog_path)
+    catalog = load_workflow_catalog(saved)
+    assert len(catalog.profiles) == 1
+    assert catalog.profiles[0].checkpoint_name == "local-model.safetensors"
+    assert catalog.profiles[0].checkpoint_license_confirmed is True
