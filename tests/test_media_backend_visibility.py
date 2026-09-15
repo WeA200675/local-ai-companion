@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import inspect
+from pathlib import Path
 
 import pytest
 
-from app.main import MainWindow
 from app.media.comfyui_resilient import ResilientComfyUIClient, ResilientComfyUIError
 from app.media.comfyui_runtime import (
     VisibleMediaBackendError,
@@ -63,6 +62,6 @@ def test_visible_runtime_crosses_optional_media_skip_boundary(monkeypatch) -> No
 
 
 def test_desktop_runtime_uses_visible_resilient_client() -> None:
-    source = inspect.getsource(MainWindow._build_services)
+    source = Path("app/main.py").read_text(encoding="utf-8")
 
-    assert "VisibleResilientComfyUIClient(" in source
+    assert "media_backend = VisibleResilientComfyUIClient(" in source
