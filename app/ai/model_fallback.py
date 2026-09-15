@@ -86,6 +86,7 @@ class FallbackOllamaClient(OllamaClient):
         num_predict: int | None = None,
         retry_callback=None,
     ) -> str:
+        trigger_error: LocalModelError | None = None
         try:
             return super().chat(
                 messages,
@@ -95,9 +96,10 @@ class FallbackOllamaClient(OllamaClient):
                 num_predict=num_predict,
                 retry_callback=retry_callback,
             )
-        except LocalModelError as initial_error:
-            if not self._can_start_fallback(initial_error):
+        except LocalModelError as exc:
+            if not self._can_start_fallback(exc):
                 raise
+            trigger_error = exc
 
         attempted: list[tuple[str, str]] = []
         failed_model = self.model
@@ -120,7 +122,8 @@ class FallbackOllamaClient(OllamaClient):
             return reply
 
         self.model = failed_model
-        raise self._fallback_exhausted(initial_error, attempted) from initial_error
+        assert trigger_error is not None
+        raise self._fallback_exhausted(trigger_error, attempted) from trigger_error
 
     def chat_stream(
         self,
@@ -134,6 +137,7 @@ class FallbackOllamaClient(OllamaClient):
         retry_callback=None,
     ) -> Iterator[str]:
         emitted = False
+        trigger_error: LocalModelError | None = None
         try:
             for chunk in super().chat_stream(
                 messages,
@@ -147,9 +151,10 @@ class FallbackOllamaClient(OllamaClient):
                 emitted = True
                 yield chunk
             return
-        except LocalModelError as initial_error:
-            if emitted or not self._can_start_fallback(initial_error):
+        except LocalModelError as exc:
+            if emitted or not self._can_start_fallback(exc):
                 raise
+            trigger_error = exc
 
         attempted: list[tuple[str, str]] = []
         failed_model = self.model
@@ -179,7 +184,8 @@ class FallbackOllamaClient(OllamaClient):
             return
 
         self.model = failed_model
-        raise self._fallback_exhausted(initial_error, attempted) from initial_error
+        assert trigger_error is not None
+        raise self._fallback_exhausted(trigger_error, attempted) from trigger_error
 
     def chat_json(
         self,
@@ -189,6 +195,7 @@ class FallbackOllamaClient(OllamaClient):
         temperature: float = 0.25,
         retry_callback=None,
     ) -> dict[str, Any]:
+        trigger_error: LocalModelError | None = None
         try:
             return super().chat_json(
                 messages,
@@ -196,9 +203,10 @@ class FallbackOllamaClient(OllamaClient):
                 temperature=temperature,
                 retry_callback=retry_callback,
             )
-        except LocalModelError as initial_error:
-            if not self._can_start_fallback(initial_error):
+        except LocalModelError as exc:
+            if not self._can_start_fallback(exc):
                 raise
+            trigger_error = exc
 
         attempted: list[tuple[str, str]] = []
         failed_model = self.model
@@ -219,4 +227,5 @@ class FallbackOllamaClient(OllamaClient):
             return result
 
         self.model = failed_model
-        raise self._fallback_exhausted(initial_error, attempted) from initial_error
+        assert trigger_error is not None
+        raise self._fallback_exhausted(trigger_error, attempted) from trigger_error
