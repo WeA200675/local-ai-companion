@@ -7,6 +7,7 @@ import tempfile
 
 import httpx
 
+from app.media.capabilities import inspect_workflow_catalog
 from app.media.profiles import WorkflowProfile, load_workflow_catalog
 from app.settings import AppSettings
 
@@ -152,6 +153,53 @@ def _check_profile_catalog(settings: AppSettings) -> DiagnosticResult | None:
     )
 
 
+def _check_media_capabilities(settings: AppSettings) -> DiagnosticResult | None:
+    path = settings.profile_catalog_path
+    if path is None:
+        return None
+    if not path.exists():
+        return DiagnosticResult("Medien-Fähigkeiten", False, f"Katalog fehlt: {path}")
+    try:
+        catalog = load_workflow_catalog(path)
+    except (OSError, ValueError) as exc:
+        return DiagnosticResult("Medien-Fähigkeiten", False, f"Katalog ungültig: {exc}")
+
+    capabilities = inspect_workflow_catalog(catalog)
+    enabled = [item for item in capabilities if item.enabled]
+    if not enabled:
+        return DiagnosticResult("Medien-Fähigkeiten", False, "Keine aktiven Workflow-Profile")
+
+    lines: list[str] = []
+    all_ready = True
+    for capability in enabled:
+        all_ready = all_ready and capability.runnable
+        line = capability.summary()
+        evidence = "/".join(capability.output_evidence) or "kein eindeutiger Output erkannt"
+        line += f" · Output-Evidenz: {evidence}"
+        if capability.missing_render_controls:
+            line += " · Workflow-Defaults: " + ",".join(capability.missing_render_controls)
+        if capability.error:
+            line += f" · Fehler: {capability.error}"
+        if capability.warnings:
+            line += " · Hinweise: " + " | ".join(capability.warnings[:3])
+        lines.append(line)
+
+    ready_kinds = sorted(
+        {
+            kind
+            for capability in enabled
+            if capability.runnable
+            for kind in capability.runnable_kinds
+        }
+    )
+    prefix = f"Bereit: {', '.join(ready_kinds) if ready_kinds else 'keine Medienart'}"
+    return DiagnosticResult(
+        "Medien-Fähigkeiten",
+        all_ready and bool(ready_kinds),
+        prefix + "\n" + "\n".join(lines),
+    )
+
+
 def _check_legacy_workflow(settings: AppSettings) -> DiagnosticResult:
     path = settings.workflow_path
     if path is None:
@@ -246,9 +294,17 @@ def _check_output(settings: AppSettings) -> DiagnosticResult:
 def run_diagnostics(settings: AppSettings, timeout: float = 5.0) -> list[DiagnosticResult]:
     """Run short local-only preflight checks without contacting cloud services."""
 
-    return [
+    results = [
         _check_model(settings, timeout),
         _check_workflow(settings),
-        _check_comfyui(settings, timeout),
-        _check_output(settings),
     ]
+    media_capabilities = _check_media_capabilities(settings)
+    if media_capabilities is not None:
+        results.append(media_capabilities)
+    results.extend(
+        [
+            _check_comfyui(settings, timeout),
+            _check_output(settings),
+        ]
+    )
+    return results
