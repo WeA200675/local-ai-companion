@@ -15,6 +15,7 @@ from app.media.coverage import VisualCoverageRepository
 from app.media.planner import MediaIntent, MediaPlanner
 from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
 from app.media.prompting import build_visual_prompt
+from app.media.rendering import MediaRenderCalculator, MediaRenderPlan
 from app.memory.store import StateStore
 from app.settings import AppSettings
 
@@ -27,6 +28,7 @@ class MediaResult:
     generated: GeneratedMedia
     history_id: int | None = None
     workflow_profile: str | None = None
+    render_plan: MediaRenderPlan | None = None
 
     @property
     def path(self) -> Path:
@@ -34,7 +36,7 @@ class MediaResult:
 
 
 class MediaService:
-    """Coordinates local visual planning, profile routing, preferences and generation."""
+    """Coordinates local visual planning, render calculation, routing and generation."""
 
     def __init__(
         self,
@@ -49,6 +51,7 @@ class MediaService:
         self.store = store
         self.settings = settings or AppSettings()
         self.planner = MediaPlanner()
+        self.render_calculator = MediaRenderCalculator()
         self.coverage = VisualCoverageRepository(store) if store is not None else None
         self.workflow_profiles: list[WorkflowProfile] = []
         if self.settings.profile_catalog_path is not None:
@@ -233,11 +236,17 @@ Return exactly one JSON object matching this schema:
   "wardrobe": [string],
   "intensity": number from 0 to 1,
   "continuity_key": string or null,
-  "reason": string
+  "reason": string,
+  "framing": string,
+  "camera_angle": string,
+  "lighting": string,
+  "composition": string,
+  "motion": string
 }}
 
 Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion materially improves the moment.
 Configured local workflow capabilities: {available_text}.
+When generate is true, make concrete visual-direction choices instead of vague style prose: choose framing, camera angle, lighting, composition, wardrobe/material cues, and a restrained motion cue for GIF/video.
 Keep every depicted person clearly adult. Visuals may be provocative, fetish-inspired, dominant, teasing, sensual, or dark, but do not plan graphic sexual acts, genital-focused imagery, minors, coercive violence, gore, or injury.
 Use historical image feedback and local coverage only as soft visual guidance; the user's current request and explicit creative context take priority.
 When the recurring companion character is depicted and continuity is enabled, use continuity_key "{self.settings.continuity_key}". Otherwise use null.
@@ -268,6 +277,22 @@ Do not include prose outside the JSON object."""
             return intent
         except (LocalModelError, ValueError):
             return MediaIntent(generate=False, reason="planner failed")
+
+    def calculate_render_plan(
+        self,
+        intent: MediaIntent,
+        preference_tags: Iterable[str] = (),
+        *,
+        workflow_profile: WorkflowProfile | None = None,
+    ) -> MediaRenderPlan:
+        quality = workflow_profile.render_quality if workflow_profile is not None else "balanced"
+        max_megapixels = workflow_profile.max_megapixels if workflow_profile is not None else None
+        return self.render_calculator.calculate(
+            intent,
+            [item for item in preference_tags],
+            quality=quality,
+            max_megapixels=max_megapixels,
+        )
 
     def generate_for_exchange(
         self,
@@ -315,6 +340,12 @@ Do not include prose outside the JSON object."""
             if not self.backend.reference_configured:
                 reference_path = None
 
+        render_plan = self.calculate_render_plan(
+            intent,
+            preference_list,
+            workflow_profile=workflow_profile,
+        )
+
         try:
             generated = self.backend.generate(
                 positive,
@@ -322,6 +353,7 @@ Do not include prose outside the JSON object."""
                 seed=seed,
                 reference_path=reference_path,
                 profile=workflow_profile,
+                render_plan=render_plan,
             )
         except ComfyUIError:
             return None
@@ -335,6 +367,10 @@ Do not include prose outside the JSON object."""
             intent_payload = intent.model_dump(mode="json")
             if workflow_profile is not None:
                 intent_payload["workflow_profile"] = workflow_profile.id
+            intent_payload["render_plan"] = render_plan.model_dump(mode="json")
+            intent_payload["render_parameters_applied"] = list(
+                generated.applied_render_parameters
+            )
             history_id = self.store.record_media_event(
                 path=str(generated.path),
                 kind=generated.kind,
@@ -350,4 +386,5 @@ Do not include prose outside the JSON object."""
             generated=generated,
             history_id=history_id,
             workflow_profile=workflow_profile.id if workflow_profile is not None else None,
+            render_plan=render_plan,
         )
