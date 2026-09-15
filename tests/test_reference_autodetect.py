@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from app.media.profiles import load_workflow_catalog
+from app.media.setup_assistant import inspect_for_auto_setup, save_generated_profile
 from app.media.workflow_inspector import inspect_api_workflow
 
 
@@ -31,6 +32,14 @@ def _reference_workflow(*, second_loader: bool = False, unrelated_loader: bool =
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "positive"}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "negative"}},
         "10": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "local.safetensors"}},
+        "13": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["3", 0], "vae": ["10", 2]},
+        },
+        "14": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["13", 0], "filename_prefix": "reference-test"},
+        },
     }
     if second_loader:
         workflow["11"] = {
@@ -111,6 +120,30 @@ def test_catalog_load_applies_ephemeral_reference_mapping_without_overwriting_fi
     raw = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert "reference_node" not in raw["profiles"][0]
     assert "routing_tags" not in raw["profiles"][0]
+
+
+def test_auto_setup_persists_unambiguous_reference_mapping(tmp_path) -> None:
+    workflow_path = tmp_path / "reference.json"
+    workflow_path.write_text(json.dumps(_reference_workflow()), encoding="utf-8")
+
+    setup = inspect_for_auto_setup(workflow_path, checkpoint_license_confirmed=True)
+
+    assert setup.ready is True
+    assert setup.profile is not None
+    assert setup.capability is not None
+    assert setup.profile.reference_node == "1"
+    assert setup.profile.reference_input_key == "image"
+    assert setup.profile.prefer_for_character is True
+    assert setup.profile.routing_tags == ["character"]
+    assert setup.capability.reference_supported is True
+
+    catalog_path = tmp_path / "generated.json"
+    save_generated_profile(setup, catalog_path)
+    saved = json.loads(catalog_path.read_text(encoding="utf-8"))["profiles"][0]
+    assert saved["reference_node"] == "1"
+    assert saved["reference_input_key"] == "image"
+    assert saved["prefer_for_character"] is True
+    assert saved["routing_tags"] == ["character"]
 
 
 def test_explicit_reference_mapping_is_never_overridden(tmp_path) -> None:
