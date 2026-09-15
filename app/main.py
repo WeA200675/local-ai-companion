@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
+from app.ai.adult_intensity import AdultIntensityRepository
 from app.ai.anti_repetition import AntiRepetitionRepository
 from app.ai.creative_accents import DetailAccentRepository, MoodGradeRepository
 from app.ai.creative_director import CreativeDirector, CreativeDirectorRepository
@@ -36,6 +37,8 @@ from app.memory.session_moments import SessionMomentRepository
 from app.memory.store import StateStore
 from app.privacy import PrivacyConfig, PrivacyStore
 from app.settings import AppSettings
+from app.ui.adult_intensity import AdultIntensityWidget
+from app.ui.adult_mode_chat import AdultModeAwareChatWidget
 from app.ui.backup import BackupWidget
 from app.ui.character_studio import CharacterStudio
 from app.ui.context_inspector import ContextInspectorWidget
@@ -44,7 +47,6 @@ from app.ui.creative_accents import CreativeAccentsPanel
 from app.ui.creative_variety import CreativeVarietyWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
-from app.ui.mode_chat import ModeAwareChatWidget
 from app.ui.persona_lab import PersonaLab
 from app.ui.privacy import PrivacyActivityMonitor, PrivacyLockScreen, PrivacySettingsWidget
 from app.ui.scenario_seeds import ScenarioSeedWidget
@@ -74,6 +76,7 @@ class MainWindow(QMainWindow):
 
         self.conversations_repository = ConversationRepository(self.store)
         self.chat_store = ConversationStateFacade(self.store, self.conversations_repository)
+        self.adult_intensity_repository = AdultIntensityRepository(self.store)
         self.variety_repository = VarietyRepository(self.store)
         self.look_repository = LookPresetRepository(self.store)
         self.arc_repository = SessionArcRepository(self.store)
@@ -131,7 +134,7 @@ class MainWindow(QMainWindow):
         self.scene_presets = ScenePresetsWidget(self.store)
         active_conversation_id = self.conversations_repository.active_id()
 
-        self.chat = ModeAwareChatWidget(
+        self.chat = AdultModeAwareChatWidget(
             store=self.chat_store,
             model=self.model,
             persona=self.persona,
@@ -168,10 +171,16 @@ class MainWindow(QMainWindow):
             scenario_seed_repository=self.scenario_seed_repository,
             scenario_seed=self.scenario_seed_repository.active(active_conversation_id),
             creative_director=self.creative_director,
+            adult_intensity_repository=self.adult_intensity_repository,
+            adult_intensity=self.adult_intensity_repository.config(active_conversation_id),
         )
         self.conversations_widget = ConversationsWidget(
             self.conversations_repository,
             can_switch=self.chat.can_reconfigure,
+        )
+        self.adult_intensity_widget = AdultIntensityWidget(
+            self.adult_intensity_repository,
+            active_conversation_id,
         )
         self.variety_widget = VarietyWidget(
             self.variety_repository,
@@ -232,6 +241,11 @@ class MainWindow(QMainWindow):
 
         self.persona_lab.persona_changed.connect(self._persona_changed)
         self.persona_lab.preference_tags_changed.connect(self._preference_tags_changed)
+        self.adult_intensity_widget.config_changed.connect(self.chat.set_adult_intensity)
+        self.adult_intensity_widget.config_changed.connect(
+            lambda _config: self.context_inspector.refresh()
+        )
+        self.chat.adult_intensity_changed.connect(self._adult_intensity_auto_changed)
         self.session_modes.active_mode_changed.connect(self.chat.set_session_mode)
         self.session_modes.active_mode_changed.connect(
             lambda _mode: self.context_inspector.refresh()
@@ -307,6 +321,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.chat, "Chat")
+        self.tabs.addTab(self.adult_intensity_widget, "Intimität")
         self.tabs.addTab(self.conversations_widget, "Unterhaltungen")
         self.tabs.addTab(self.scenario_studio, "Session Studio")
         self.tabs.addTab(self.variety_widget, "Impulse")
@@ -483,12 +498,17 @@ class MainWindow(QMainWindow):
         self.scenario_studio.refresh_from_repository()
         self.context_inspector.refresh()
 
+    def _adult_intensity_auto_changed(self, config: object) -> None:
+        self.adult_intensity_widget.refresh()
+        self.context_inspector.refresh()
+
     def _conversation_changed(self, conversation_id: str) -> None:
         try:
             self.chat.set_conversation(conversation_id)
         except RuntimeError as exc:
             QMessageBox.information(self, "Unterhaltung", str(exc))
             return
+        self.adult_intensity_widget.set_conversation(conversation_id)
         self.variety_widget.set_conversation(conversation_id)
         self.creative_variety.set_conversation(conversation_id)
         self.creative_accents.set_conversation(conversation_id)
