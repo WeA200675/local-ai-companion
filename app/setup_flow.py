@@ -25,15 +25,14 @@ def candidate_settings(
     model_url: str,
     completed: bool | None = None,
 ) -> AppSettings:
-    """Return first-run model choices without disturbing unrelated local settings."""
+    """Return validated first-run model choices without disturbing other settings."""
 
-    update: dict[str, object] = {
-        "model_name": model_name.strip(),
-        "model_url": model_url.strip(),
-    }
+    payload = settings.model_dump(mode="python")
+    payload["model_name"] = model_name.strip()
+    payload["model_url"] = model_url.strip()
     if completed is not None:
-        update["setup_completed"] = completed
-    return settings.model_copy(update=update)
+        payload["setup_completed"] = completed
+    return AppSettings.model_validate(payload)
 
 
 def core_setup_status(results: list[DiagnosticResult]) -> CoreSetupStatus:
