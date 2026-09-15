@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.media.coverage import VisualCoverageRepository
+from app.media_suitability_gui import MediaSuitabilityWindow
 from app.memory.store import StateStore
 from app.ui.media_preview import MediaPreview
 from app.ui.visual_coverage import VisualCoverageWidget
@@ -41,6 +42,7 @@ class MediaHistoryWidget(QWidget):
         self.limit = limit
         self._events: dict[int, dict[str, object]] = {}
         self._reference_ids: dict[str, int] = {}
+        self._suitability_window: MediaSuitabilityWindow | None = None
         self.coverage_repository = VisualCoverageRepository(store)
 
         self.list_widget = QListWidget()
@@ -48,7 +50,8 @@ class MediaHistoryWidget(QWidget):
         self.meta = QLabel("Noch kein Medium ausgewählt")
         self.meta.setWordWrap(True)
         self.feedback_note = QLabel(
-            "Bildbewertungen lernen Stilpräferenzen. Die Medienhistorie zeigt zusätzlich die lokale Gestaltung und Render-Berechnung, damit nachvollziehbar bleibt, was an ComfyUI übergeben wurde."
+            "Bildbewertungen lernen Stilpräferenzen und die Eignung lokaler Workflows für Portrait, Ganzkörper, Detail, Umgebung und Character-Continuity. "
+            "Die Medienhistorie zeigt Gestaltung, Routing und Render-Berechnung, damit nachvollziehbar bleibt, was an ComfyUI übergeben wurde."
         )
         self.feedback_note.setWordWrap(True)
 
@@ -72,6 +75,10 @@ class MediaHistoryWidget(QWidget):
         self.clear_reference = QPushButton("Referenz lösen")
         self.pin_reference.setEnabled(False)
         self.clear_reference.setEnabled(False)
+        self.suitability_lab = QPushButton("🧪 Medien-Eignungslabor")
+        self.suitability_lab.setToolTip(
+            "Vier kleine lokale Testbilder rendern und Workflows für Portrait, Ganzkörper, Detail und Umgebung bewerten"
+        )
         self.refresh_button = QPushButton("Historie aktualisieren")
 
         row = QHBoxLayout()
@@ -81,6 +88,7 @@ class MediaHistoryWidget(QWidget):
         row.addWidget(self.pin_reference)
         row.addWidget(self.clear_reference)
         row.addStretch(1)
+        row.addWidget(self.suitability_lab)
         row.addWidget(self.refresh_button)
 
         history_page = QWidget()
@@ -106,6 +114,7 @@ class MediaHistoryWidget(QWidget):
         self.clear_feedback.clicked.connect(lambda: self._rate(None))
         self.pin_reference.clicked.connect(self._pin_reference)
         self.clear_reference.clicked.connect(self._clear_reference)
+        self.suitability_lab.clicked.connect(self._open_suitability_lab)
         self.refresh_button.clicked.connect(self.refresh)
         self.refresh()
 
@@ -219,6 +228,25 @@ class MediaHistoryWidget(QWidget):
             )
         return target, applied_text
 
+    @staticmethod
+    def _routing_summary(intent: dict[str, object]) -> list[str]:
+        lines: list[str] = []
+        checkpoint = str(intent.get("workflow_checkpoint") or "").strip()
+        if checkpoint:
+            lines.append(f"Checkpoint: {checkpoint}")
+        focus = intent.get("workflow_focus_tags")
+        if isinstance(focus, list) and focus:
+            lines.append("Routing-Fokus: " + ", ".join(str(item) for item in focus))
+        score = intent.get("workflow_feedback_score_before")
+        samples = intent.get("workflow_feedback_samples_before")
+        if isinstance(score, (int, float)):
+            sample_text = f" · {samples} bewertete Render(s)" if isinstance(samples, int) else ""
+            lines.append(f"Gelernter Workflow-Score vor Render: {score:+g}{sample_text}")
+        probe = str(intent.get("suitability_probe") or "").strip()
+        if probe:
+            lines.append(f"Eignungstest: {probe}")
+        return lines
+
     def _selection_changed(self, current: QListWidgetItem | None, _previous) -> None:
         if current is None:
             self.pin_reference.setEnabled(False)
@@ -234,6 +262,7 @@ class MediaHistoryWidget(QWidget):
         render_summary = ""
         applied_summary = ""
         direction_summary = ""
+        routing_lines: list[str] = []
         if isinstance(intent, dict):
             description = " · ".join(
                 str(intent.get(key, "")).strip()
@@ -249,6 +278,7 @@ class MediaHistoryWidget(QWidget):
             ]
             direction_summary = " · ".join(item for item in direction_parts if item)
             render_summary, applied_summary = self._render_summary(intent)
+            routing_lines = self._routing_summary(intent)
         self.preview.show_media(str(event["path"]), description=description)
         continuity_key = str(event.get("continuity_key") or "")
         is_reference = self._reference_ids.get(continuity_key) == media_id
@@ -256,6 +286,7 @@ class MediaHistoryWidget(QWidget):
             f"ID #{media_id} · Seed {event['seed']} · Workflow {workflow_profile}",
             f"Continuity {continuity_key or 'aus'} · Bewertung {event.get('feedback') or 'keine'} · Referenz {'fest' if is_reference else 'nein'}",
         ]
+        meta_lines.extend(routing_lines)
         if direction_summary:
             meta_lines.append(f"Gestaltung: {direction_summary}")
         if render_summary:
@@ -281,6 +312,26 @@ class MediaHistoryWidget(QWidget):
         self.store.set_media_feedback(media_id, feedback)
         self.refresh()
         self.feedback_changed.emit()
+
+    def _open_suitability_lab(self) -> None:
+        window = self._suitability_window
+        if window is not None and window.isVisible():
+            window.raise_()
+            window.activateWindow()
+            return
+        window = MediaSuitabilityWindow(store=self.store, parent=None)
+        window.media_created.connect(self.refresh)
+        window.feedback_changed.connect(self._suitability_feedback_changed)
+        window.destroyed.connect(self._suitability_closed)
+        self._suitability_window = window
+        window.show()
+
+    def _suitability_feedback_changed(self) -> None:
+        self.refresh()
+        self.feedback_changed.emit()
+
+    def _suitability_closed(self, _object=None) -> None:
+        self._suitability_window = None
 
     def _pin_reference(self) -> None:
         media_id = self._selected_id()
