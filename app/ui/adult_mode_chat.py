@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QMessageBox
 
 from app.ai.adult_intensity import AdultIntensityConfig, AdultIntensityRepository
+from app.ai.error_presentation import present_local_model_error
 from app.ai.prompting import build_system_prompt
 from app.ai.storyboard_journeys import ActiveStoryboardJourney, StoryboardJourneyRepository
 from app.ui.mode_chat import ModeAwareChatWidget
@@ -26,11 +28,32 @@ class AdultModeAwareChatWidget(ModeAwareChatWidget):
             if adult_intensity is not None
             else AdultIntensityConfig()
         )
+        # Base ChatWidget calls the virtual message-action refresher during its
+        # constructor, so failure state must exist before ``super().__init__``.
+        self._last_generation_failed = False
+        self._last_failure_status = ""
+        self._last_failure_retry_label = "↻ Fehlgeschlagenen Versuch wiederholen"
         super().__init__(*args, **kwargs)
         # Storyboard Journeys are stored in the same local StateStore. Keeping the
         # repository here avoids another MainWindow wiring dependency while the
         # Session Studio remains responsible for chapter transitions.
         self.storyboard_repository = StoryboardJourneyRepository(self.store)
+
+    def _clear_failure_state(self) -> None:
+        self._last_generation_failed = False
+        self._last_failure_status = ""
+        self._last_failure_retry_label = "↻ Fehlgeschlagenen Versuch wiederholen"
+
+    def _refresh_message_actions(self) -> None:
+        super()._refresh_message_actions()
+        if self._last_generation_failed:
+            self.regenerate_button.setText(self._last_failure_retry_label)
+            self.regenerate_button.setToolTip(
+                "Die bereits lokal gespeicherte letzte Nutzernachricht erneut an das Modell senden; sie wird nicht doppelt gespeichert."
+            )
+        else:
+            self.regenerate_button.setText("↻ Neu generieren")
+            self.regenerate_button.setToolTip("Letzte Antwort verwerfen und neu erzeugen")
 
     def set_adult_intensity(self, config: AdultIntensityConfig) -> None:
         self.adult_intensity = config.model_copy(deep=True)
@@ -46,14 +69,18 @@ class AdultModeAwareChatWidget(ModeAwareChatWidget):
         )
 
     def set_conversation(self, conversation_id: str) -> None:
+        self._clear_failure_state()
         super().set_conversation(conversation_id)
         self.refresh_adult_intensity()
 
     def send_current(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
+        text = self.input.toPlainText().strip()
+        if text:
+            self._clear_failure_state()
+            self._refresh_message_actions()
         if self.adult_intensity_repository is not None and self.conversations is not None:
-            text = self.input.toPlainText().strip()
             if text:
                 config, changed = self.adult_intensity_repository.observe_user_signal(
                     self.conversations.active_id(),
@@ -63,6 +90,61 @@ class AdultModeAwareChatWidget(ModeAwareChatWidget):
                 if changed:
                     self.adult_intensity_changed.emit(config.model_copy(deep=True))
         super().send_current()
+
+    def regenerate_last_response(self) -> None:
+        self._clear_failure_state()
+        self._refresh_message_actions()
+        super().regenerate_last_response()
+
+    def clear_chat(self) -> None:
+        super().clear_chat()
+        if self.store.latest_user_message() is None:
+            self._clear_failure_state()
+            self._refresh_message_actions()
+
+    def _model_completed(self, reply: str) -> None:
+        self._clear_failure_state()
+        super()._model_completed(reply)
+
+    def _model_stopped(self, partial: str) -> None:
+        self._clear_failure_state()
+        super()._model_stopped(partial)
+
+    def _model_interrupted(self, partial: str, error: str) -> None:
+        self._clear_failure_state()
+        super()._model_interrupted(partial, error)
+
+    def _model_failed(self, error: str) -> None:
+        self._finish_streaming_message()
+        presentation = present_local_model_error(error, self.model.model)
+        self._last_generation_failed = True
+        self._last_failure_status = presentation.status
+        self._last_failure_retry_label = presentation.retry_label
+        self._latest_user_text = ""
+        self._latest_assistant_text = ""
+        self._last_response_incomplete = False
+        self.more_button.setEnabled(False)
+        self.less_button.setEnabled(False)
+        self.status.setText(presentation.status)
+        self.transcript.append(
+            "<b>⚠ Lokale Antwort fehlgeschlagen.</b><br>"
+            "Deine Nachricht wurde nur einmal lokal gespeichert. Nutze Wiederholen, nachdem der lokale Backend-Fehler behoben ist.<br>"
+        )
+        self._scroll_to_bottom()
+        self._refresh_message_actions()
+        QMessageBox.warning(
+            self,
+            presentation.title,
+            presentation.detail
+            + "\n\nDie letzte Nutzernachricht bleibt genau einmal im lokalen Verlauf gespeichert. "
+            "Der Wiederholen-Button sendet denselben Turn erneut, ohne ihn zu duplizieren.",
+        )
+
+    def _worker_finished(self) -> None:
+        super()._worker_finished()
+        if self._last_generation_failed:
+            self.status.setText(self._last_failure_status)
+            self._refresh_message_actions()
 
     def _adult_intensity_context(self) -> str:
         return self.adult_intensity.prompt_text()
