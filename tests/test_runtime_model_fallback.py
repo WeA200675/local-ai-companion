@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.ai.model_fallback import FallbackOllamaClient
+from app.ai.model_fallback_state import ModelFallbackPolicy
 from app.runtime_launcher import approved_fallback_models, configured_model_client_class
 from app.settings import AppSettings
 
@@ -21,19 +22,19 @@ class FakeRepository:
         return self.reports.get(model_name.casefold())
 
 
-def test_settings_normalize_fallback_names() -> None:
-    settings = AppSettings(
-        model_fallback_enabled=True,
-        model_fallbacks=" qwen3:8b, QWEN3:8B, dolphin-mistral:7b, ",
+def test_policy_normalizes_fallback_names() -> None:
+    policy = ModelFallbackPolicy(
+        enabled=True,
+        models=" qwen3:8b, QWEN3:8B, dolphin-mistral:7b, ",
     )
-    assert settings.model_fallbacks == ["qwen3:8b", "QWEN3:8B", "dolphin-mistral:7b"]
+    assert policy.models == ["qwen3:8b", "dolphin-mistral:7b"]
 
 
 def test_runtime_accepts_only_catalog_models_with_operational_probe() -> None:
-    settings = AppSettings(
-        model_name="qwen2.5:7b",
-        model_fallback_enabled=True,
-        model_fallbacks=[
+    settings = AppSettings(model_name="qwen2.5:7b")
+    policy = ModelFallbackPolicy(
+        enabled=True,
+        models=[
             "qwen3:8b",
             "dolphin-mistral:7b",
             "custom-unknown:7b",
@@ -51,24 +52,21 @@ def test_runtime_accepts_only_catalog_models_with_operational_probe() -> None:
         }
     )
 
-    assert approved_fallback_models(settings, repository) == (
+    assert approved_fallback_models(settings, policy, repository) == (
         "qwen3:8b",
         "dolphin-mistral:7b",
     )
 
 
 def test_runtime_returns_no_fallbacks_when_disabled() -> None:
-    settings = AppSettings(
-        model_fallback_enabled=False,
-        model_fallbacks=["qwen3:8b"],
-    )
+    settings = AppSettings()
+    policy = ModelFallbackPolicy(enabled=False, models=["qwen3:8b"])
     repository = FakeRepository({"qwen3:8b": FakeReport(True, "compatible")})
-    assert approved_fallback_models(settings, repository) == ()
+    assert approved_fallback_models(settings, policy, repository) == ()
 
 
 def test_configured_client_class_contains_explicit_chain() -> None:
-    settings = AppSettings(model_fallback_enabled=True)
-    client_class = configured_model_client_class(settings, ["qwen3:8b", "dolphin-mistral:7b"])
+    client_class = configured_model_client_class(["qwen3:8b", "dolphin-mistral:7b"])
     client = client_class(model="qwen2.5:7b", reconnect_attempts=0)
     try:
         assert isinstance(client, FallbackOllamaClient)
