@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 
 import httpx
 
@@ -34,14 +33,20 @@ def response_error_text(response: httpx.Response | None) -> str:
         return ""
     try:
         payload = response.json()
-    except (ValueError, json.JSONDecodeError):
-        return _clean_text(response.text)
+    except (ValueError, httpx.ResponseNotRead):
+        try:
+            return _clean_text(response.text)
+        except httpx.ResponseNotRead:
+            return ""
     if isinstance(payload, dict):
         for key in ("error", "message", "detail"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return _clean_text(value)
-    return _clean_text(response.text)
+    try:
+        return _clean_text(response.text)
+    except httpx.ResponseNotRead:
+        return ""
 
 
 def classify_ollama_failure(
