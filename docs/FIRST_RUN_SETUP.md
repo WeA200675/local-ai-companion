@@ -30,7 +30,7 @@ Run the normal launcher:
 .\.venv\Scripts\python.exe -m app.first_run
 ```
 
-After successful setup, `setup_completed` is stored with the local runtime settings and later launches skip the wizard automatically.
+After successful setup, completion is stored as a dedicated local `first_run_setup` app-state record. It is deliberately separate from the normal runtime settings, so later edits to model/media settings cannot accidentally make the first-run wizard reappear.
 
 To reopen the setup manually:
 
@@ -38,7 +38,7 @@ To reopen the setup manually:
 .\.venv\Scripts\python.exe -m app.first_run --force
 ```
 
-Choosing **Später** closes the dialog without changing the completion flag, so it appears again on the next normal Windows launch. Choosing **Nicht mehr automatisch anzeigen** leaves the previous backend settings unchanged but marks first-run setup as completed.
+Choosing **Später** closes the dialog without changing the completion state, so it appears again on the next normal Windows launch. Choosing **Nicht mehr automatisch anzeigen** leaves the previous backend settings unchanged but marks first-run setup as completed.
 
 ## Media setup
 
