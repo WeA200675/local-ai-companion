@@ -36,6 +36,7 @@ class AppSettings(BaseModel):
     adaptive_memory_enabled: bool = True
     adaptive_memory_interval: int = Field(default=3, ge=1, le=20)
     media_history_limit: int = Field(default=200, ge=10, le=5000)
+    setup_completed: bool = False
 
     @field_validator("model_name", "model_url", "media_url", "continuity_key")
     @classmethod
@@ -95,6 +96,8 @@ class AppSettings(BaseModel):
             adaptive_memory_enabled=os.getenv("LOCAL_ADAPTIVE_MEMORY", "1").strip().lower()
             not in {"0", "false", "no", "off"},
             adaptive_memory_interval=int(os.getenv("LOCAL_ADAPTIVE_MEMORY_INTERVAL", "3")),
+            setup_completed=os.getenv("LOCAL_SETUP_COMPLETED", "0").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
 
     @property
