@@ -196,9 +196,17 @@ class MediaHistoryWidget(QWidget):
                 f" · {render.get('frames', '?')} Frames @ {render.get('fps', '?')} fps"
                 f" (~{render.get('duration_seconds', '?')} s)"
             )
+
+        hardware_tier = str(render.get("hardware_tier") or "unknown")
+        hardware_device = str(render.get("hardware_device") or "unknown")
+        hardware_vram = render.get("hardware_vram_free_gb")
+        hardware = f" · Hardware {hardware_tier}: {hardware_device}"
+        if isinstance(hardware_vram, (int, float)):
+            hardware += f" · freie VRAM ~{float(hardware_vram):.1f} GB"
+
         target = (
             f"Render-Ziel: {width}×{height} · {aspect} · {quality} · {steps} Steps · "
-            f"CFG {cfg} · Denoise {denoise}{motion} · Work ~{work}"
+            f"CFG {cfg} · Denoise {denoise}{motion} · Work ~{work}{hardware}"
         )
 
         applied = intent.get("render_parameters_applied")
