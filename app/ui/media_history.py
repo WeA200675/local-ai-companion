@@ -10,18 +10,21 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from app.media.coverage import VisualCoverageRepository
 from app.memory.store import StateStore
 from app.ui.media_preview import MediaPreview
+from app.ui.visual_coverage import VisualCoverageWidget
 
 _IMAGE_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 class MediaHistoryWidget(QWidget):
-    """Local history, feedback, workflow trace, and character-reference UI."""
+    """Local history, feedback, workflow trace, character reference, and coverage UI."""
 
     feedback_changed = Signal()
     reference_changed = Signal()
@@ -38,6 +41,7 @@ class MediaHistoryWidget(QWidget):
         self.limit = limit
         self._events: dict[int, dict[str, object]] = {}
         self._reference_ids: dict[str, int] = {}
+        self.coverage_repository = VisualCoverageRepository(store)
 
         self.list_widget = QListWidget()
         self.preview = MediaPreview()
@@ -79,10 +83,22 @@ class MediaHistoryWidget(QWidget):
         row.addStretch(1)
         row.addWidget(self.refresh_button)
 
+        history_page = QWidget()
+        history_layout = QVBoxLayout(history_page)
+        history_layout.addWidget(splitter, 1)
+        history_layout.addWidget(self.feedback_note)
+        history_layout.addLayout(row)
+
+        self.coverage_widget = VisualCoverageWidget(
+            self.coverage_repository,
+            self._active_conversation_id(),
+        )
+        tabs = QTabWidget()
+        tabs.addTab(history_page, "Historie & Feedback")
+        tabs.addTab(self.coverage_widget, "Visual Coverage")
+
         layout = QVBoxLayout(self)
-        layout.addWidget(splitter, 1)
-        layout.addWidget(self.feedback_note)
-        layout.addLayout(row)
+        layout.addWidget(tabs)
 
         self.list_widget.currentItemChanged.connect(self._selection_changed)
         self.positive.clicked.connect(lambda: self._rate("positive"))
@@ -92,6 +108,10 @@ class MediaHistoryWidget(QWidget):
         self.clear_reference.clicked.connect(self._clear_reference)
         self.refresh_button.clicked.connect(self.refresh)
         self.refresh()
+
+    def _active_conversation_id(self) -> str:
+        value = self.store._load_app_state("active_conversation_id")  # noqa: SLF001
+        return value.strip() if value and value.strip() else "main"
 
     def set_limit(self, limit: int) -> None:
         self.limit = max(10, limit)
@@ -145,6 +165,8 @@ class MediaHistoryWidget(QWidget):
         elif not self.list_widget.count():
             self.pin_reference.setEnabled(False)
             self.clear_reference.setEnabled(False)
+
+        self.coverage_widget.set_conversation(self._active_conversation_id())
 
     def _selected_id(self) -> int | None:
         item = self.list_widget.currentItem()
