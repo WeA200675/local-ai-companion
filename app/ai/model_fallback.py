@@ -50,6 +50,13 @@ class FallbackOllamaClient(OllamaClient):
         # or a request that simply exceeded the inference timeout.
         return error.code == "backend_failure"
 
+    @staticmethod
+    def _candidate_failure_stops_chain(error: LocalModelError) -> bool:
+        # Once the shared Ollama endpoint itself is offline/transport-broken, trying
+        # additional models cannot help. A timeout also stops the chain to avoid
+        # multiplying a long local inference wait by every fallback candidate.
+        return error.code in {"unreachable", "transport_error", "timeout"}
+
     def _remaining_fallbacks(self) -> tuple[str, ...]:
         chain = (self.primary_model, *self.fallback_models)
         current = self.model.casefold()
@@ -86,10 +93,11 @@ class FallbackOllamaClient(OllamaClient):
         num_predict: int | None = None,
         retry_callback=None,
     ) -> str:
+        message_list = list(messages)
         trigger_error: LocalModelError | None = None
         try:
             return super().chat(
-                messages,
+                message_list,
                 system_prompt=system_prompt,
                 temperature=temperature,
                 num_ctx=num_ctx,
@@ -108,7 +116,7 @@ class FallbackOllamaClient(OllamaClient):
             self.model = candidate
             try:
                 reply = super().chat(
-                    messages,
+                    message_list,
                     system_prompt=system_prompt,
                     temperature=temperature,
                     num_ctx=num_ctx,
@@ -117,6 +125,8 @@ class FallbackOllamaClient(OllamaClient):
                 )
             except LocalModelError as exc:
                 attempted.append((candidate, str(exc)))
+                if self._candidate_failure_stops_chain(exc):
+                    break
                 continue
             self._notify_fallback(previous, candidate)
             return reply
@@ -136,11 +146,12 @@ class FallbackOllamaClient(OllamaClient):
         should_stop=None,
         retry_callback=None,
     ) -> Iterator[str]:
+        message_list = list(messages)
         emitted = False
         trigger_error: LocalModelError | None = None
         try:
             for chunk in super().chat_stream(
-                messages,
+                message_list,
                 system_prompt=system_prompt,
                 temperature=temperature,
                 num_ctx=num_ctx,
@@ -164,7 +175,7 @@ class FallbackOllamaClient(OllamaClient):
             candidate_emitted = False
             try:
                 for chunk in super().chat_stream(
-                    messages,
+                    message_list,
                     system_prompt=system_prompt,
                     temperature=temperature,
                     num_ctx=num_ctx,
@@ -179,6 +190,8 @@ class FallbackOllamaClient(OllamaClient):
                 if candidate_emitted:
                     raise
                 attempted.append((candidate, str(exc)))
+                if self._candidate_failure_stops_chain(exc):
+                    break
                 continue
             self._notify_fallback(previous, candidate)
             return
@@ -195,10 +208,11 @@ class FallbackOllamaClient(OllamaClient):
         temperature: float = 0.25,
         retry_callback=None,
     ) -> dict[str, Any]:
+        message_list = list(messages)
         trigger_error: LocalModelError | None = None
         try:
             return super().chat_json(
-                messages,
+                message_list,
                 system_prompt=system_prompt,
                 temperature=temperature,
                 retry_callback=retry_callback,
@@ -215,13 +229,15 @@ class FallbackOllamaClient(OllamaClient):
             self.model = candidate
             try:
                 result = super().chat_json(
-                    messages,
+                    message_list,
                     system_prompt=system_prompt,
                     temperature=temperature,
                     retry_callback=retry_callback,
                 )
             except LocalModelError as exc:
                 attempted.append((candidate, str(exc)))
+                if self._candidate_failure_stops_chain(exc):
+                    break
                 continue
             self._notify_fallback(previous, candidate)
             return result
