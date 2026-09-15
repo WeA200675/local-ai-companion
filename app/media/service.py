@@ -18,6 +18,7 @@ from app.media.planner import MediaIntent, MediaPlanner
 from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
 from app.media.prompting import build_visual_prompt
 from app.media.rendering import MediaRenderCalculator, MediaRenderPlan
+from app.media.workflow_routing import WorkflowPerformanceRepository, intent_focus_tags
 from app.memory.store import StateStore
 from app.settings import AppSettings
 
@@ -67,6 +68,14 @@ class MediaService:
         self.render_calculator = MediaRenderCalculator()
         self.hardware_probe = ComfyUIHardwareProbe(self.settings.media_url)
         self.coverage = VisualCoverageRepository(store) if store is not None else None
+        self.workflow_performance = (
+            WorkflowPerformanceRepository(
+                store,
+                history_limit=self.settings.media_history_limit,
+            )
+            if store is not None
+            else None
+        )
         self.workflow_profiles: list[WorkflowProfile] = []
         self.workflow_capabilities: dict[str, WorkflowCapability] = {}
         if self.settings.profile_catalog_path is not None:
@@ -180,12 +189,23 @@ class MediaService:
             for capability in self.workflow_capabilities.values()
             if capability.runnable and capability.reference_supported
         }
+        focus_tags = set(intent_focus_tags(intent))
+        performance_scores = (
+            self.workflow_performance.scores(
+                (profile.id for profile in profiles),
+                focus_tags,
+            )
+            if self.workflow_performance is not None
+            else {}
+        )
         return choose_workflow_profile(
             profiles,
             kind=intent.kind,
             character_focus=bool(continuity_key),
             reference_available=reference_path is not None,
             reference_supported_ids=reference_supported_ids,
+            focus_tags=focus_tags,
+            performance_scores=performance_scores,
         )
 
     @staticmethod
@@ -413,12 +433,12 @@ Do not include prose outside the JSON object."""
             negative = f"{negative}, user-disliked visual cues: {', '.join(disliked_cues)}"
 
         continuity_key = intent.continuity_key if self.settings.continuity_enabled else None
-        profile = None
+        character_profile = None
         seed = None
         if continuity_key and self.store is not None:
-            profile = self.store.load_character_profile(continuity_key)
-            seed = profile.seed
-            positive = f"{positive}, {profile.appearance_prompt}"
+            character_profile = self.store.load_character_profile(continuity_key)
+            seed = character_profile.seed
+            positive = f"{positive}, {character_profile.appearance_prompt}"
 
         reference_path = self._reference_path(continuity_key)
         workflow_profile = self._select_workflow_profile(
@@ -457,15 +477,28 @@ Do not include prose outside the JSON object."""
         except ComfyUIError:
             return None
 
-        if profile is not None and self.store is not None:
-            profile.register_generation(str(generated.path))
-            self.store.save_character_profile(profile)
+        if character_profile is not None and self.store is not None:
+            character_profile.register_generation(str(generated.path))
+            self.store.save_character_profile(character_profile)
 
         history_id = None
         if self.store is not None:
             intent_payload = intent.model_dump(mode="json")
+            focus_tags = list(intent_focus_tags(intent))
+            intent_payload["workflow_focus_tags"] = focus_tags
             if workflow_profile is not None:
                 intent_payload["workflow_profile"] = workflow_profile.id
+                intent_payload["workflow_checkpoint"] = workflow_profile.checkpoint_name
+                intent_payload["workflow_declared_routing_tags"] = list(
+                    workflow_profile.routing_tags
+                )
+                if self.workflow_performance is not None:
+                    performance = self.workflow_performance.performance(
+                        workflow_profile.id,
+                        focus_tags,
+                    )
+                    intent_payload["workflow_feedback_score_before"] = performance.score
+                    intent_payload["workflow_feedback_samples_before"] = performance.samples
                 capability = self.workflow_capabilities.get(workflow_profile.id)
                 if capability is not None:
                     intent_payload["workflow_capabilities"] = {
