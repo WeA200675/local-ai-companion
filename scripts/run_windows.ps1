@@ -23,4 +23,6 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-& $venvPython -m app.main
+# The runtime launcher applies the explicitly configured, locally tested strict
+# Open-Source model fallback chain before constructing the desktop window.
+& $venvPython -m app.runtime_launcher
