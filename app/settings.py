@@ -15,8 +15,6 @@ class AppSettings(BaseModel):
 
     model_name: str = "qwen2.5:7b"
     model_url: str = "http://127.0.0.1:11434"
-    model_fallback_enabled: bool = False
-    model_fallbacks: list[str] = Field(default_factory=list)
     chat_temperature: float = Field(default=0.85, ge=0.0, le=2.0)
     chat_history_messages: int = Field(default=60, ge=10, le=500)
     chat_num_ctx: int = Field(default=0, ge=0, le=262144)
@@ -47,28 +45,6 @@ class AppSettings(BaseModel):
             raise ValueError("value must not be blank")
         return clean
 
-    @field_validator("model_fallbacks", mode="before")
-    @classmethod
-    def _normalize_model_fallbacks(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            raw_items = value.split(",")
-        elif isinstance(value, (list, tuple, set)):
-            raw_items = list(value)
-        else:
-            raw_items = [value]
-        result: list[str] = []
-        seen: set[str] = set()
-        for raw in raw_items:
-            name = str(raw or "").strip()
-            folded = name.casefold()
-            if not name or folded in seen:
-                continue
-            seen.add(folded)
-            result.append(name)
-        return result
-
     @field_validator(
         "media_positive_node",
         "media_negative_node",
@@ -95,9 +71,6 @@ class AppSettings(BaseModel):
         return cls(
             model_name=os.getenv("LOCAL_AI_MODEL", "qwen2.5:7b"),
             model_url=os.getenv("LOCAL_AI_URL", "http://127.0.0.1:11434"),
-            model_fallback_enabled=os.getenv("LOCAL_AI_FALLBACK_ENABLED", "0").strip().lower()
-            in {"1", "true", "yes", "on"},
-            model_fallbacks=os.getenv("LOCAL_AI_FALLBACK_MODELS", ""),
             chat_temperature=float(os.getenv("LOCAL_CHAT_TEMPERATURE", "0.85")),
             chat_history_messages=int(os.getenv("LOCAL_CHAT_HISTORY_MESSAGES", "60")),
             chat_num_ctx=int(os.getenv("LOCAL_CHAT_NUM_CTX", "0")),
