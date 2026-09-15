@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -44,11 +45,56 @@ def _linked_node_id(value: object) -> str | None:
     return None
 
 
+def _linked_node_ids(inputs: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for value in inputs.values():
+        node_id = _linked_node_id(value)
+        if node_id is not None and node_id not in result:
+            result.append(node_id)
+    return result
+
+
 def _is_text_node(node: object) -> bool:
     inputs = _node_inputs(node)
     if inputs is None:
         return False
     return any(key in inputs for key in ("text", "prompt"))
+
+
+def _upstream_text_nodes(
+    workflow: dict[str, Any],
+    start_node: str,
+    *,
+    max_depth: int = 12,
+) -> list[str]:
+    """Return nearest text/prompt nodes reachable upstream from one graph input."""
+
+    queue: deque[tuple[str, int]] = deque([(start_node, 0)])
+    seen: set[str] = set()
+    found: list[str] = []
+    found_depth: int | None = None
+
+    while queue:
+        node_id, depth = queue.popleft()
+        if node_id in seen or depth > max_depth:
+            continue
+        seen.add(node_id)
+        node = workflow.get(node_id)
+        if _is_text_node(node):
+            if found_depth is None:
+                found_depth = depth
+            if depth == found_depth:
+                found.append(node_id)
+            continue
+        if found_depth is not None or depth == max_depth:
+            continue
+        inputs = _node_inputs(node)
+        if inputs is None:
+            continue
+        for upstream in sorted(_linked_node_ids(inputs)):
+            if upstream not in seen:
+                queue.append((upstream, depth + 1))
+    return found
 
 
 def _sampler_candidates(workflow: dict[str, Any]) -> list[tuple[str, str, str, str]]:
@@ -109,37 +155,55 @@ def inspect_api_workflow(workflow: object, *, path: Path | None = None) -> Workf
             ),
         )
 
-    scored: list[tuple[int, tuple[str, str, str, str]]] = []
+    scored: list[tuple[int, tuple[str, str, str, str], list[str], list[str]]] = []
     for candidate in candidates:
-        sampler_id, positive_id, negative_id, _seed_key = candidate
-        score = 0
-        if positive_id in workflow and _is_text_node(workflow[positive_id]):
-            score += 1
-        if negative_id in workflow and _is_text_node(workflow[negative_id]):
-            score += 1
-        scored.append((score, candidate))
+        _sampler_id, positive_start, negative_start, _seed_key = candidate
+        positive_nodes = _upstream_text_nodes(workflow, positive_start)
+        negative_nodes = _upstream_text_nodes(workflow, negative_start)
+        score = int(bool(positive_nodes)) + int(bool(negative_nodes))
+        scored.append((score, candidate, positive_nodes, negative_nodes))
     scored.sort(key=lambda item: (-item[0], item[1][0]))
-    _score, selected = scored[0]
-    sampler_id, positive_id, negative_id, seed_key = selected
+    _score, selected, positive_nodes, negative_nodes = scored[0]
+    sampler_id, positive_start, negative_start, seed_key = selected
 
     if len(candidates) > 1:
         warnings.append(
             f"Mehrere Sampler gefunden ({len(candidates)}). Verwendet wird Node {sampler_id}; bitte vor dem Speichern prüfen."
         )
-    if positive_id not in workflow or not _is_text_node(workflow.get(positive_id)):
+
+    positive_node = positive_nodes[0] if positive_nodes else None
+    negative_node = negative_nodes[0] if negative_nodes else None
+    if positive_node is None:
         warnings.append(
-            f"Positive-Verknüpfung zeigt auf Node {positive_id}, dort wurde aber kein text/prompt-Input erkannt."
+            f"Vom positiven Sampler-Eingang über Node {positive_start} wurde kein eindeutiger text/prompt-Node gefunden."
         )
-    if negative_id not in workflow or not _is_text_node(workflow.get(negative_id)):
+    elif positive_node != positive_start:
         warnings.append(
-            f"Negative-Verknüpfung zeigt auf Node {negative_id}, dort wurde aber kein text/prompt-Input erkannt."
+            f"Positive Prompt Node {positive_node} wurde über die Zwischen-Node {positive_start} zurückverfolgt."
+        )
+    if len(positive_nodes) > 1:
+        warnings.append(
+            f"Mehrere gleich nahe positive Text-Nodes gefunden: {', '.join(positive_nodes)}; verwendet wird {positive_node}."
+        )
+
+    if negative_node is None:
+        warnings.append(
+            f"Vom negativen Sampler-Eingang über Node {negative_start} wurde kein eindeutiger text/prompt-Node gefunden."
+        )
+    elif negative_node != negative_start:
+        warnings.append(
+            f"Negative Prompt Node {negative_node} wurde über die Zwischen-Node {negative_start} zurückverfolgt."
+        )
+    if len(negative_nodes) > 1:
+        warnings.append(
+            f"Mehrere gleich nahe negative Text-Nodes gefunden: {', '.join(negative_nodes)}; verwendet wird {negative_node}."
         )
 
     return WorkflowInspection(
         path=path,
         valid=True,
-        positive_node=positive_id,
-        negative_node=negative_id,
+        positive_node=positive_node,
+        negative_node=negative_node,
         seed_node=sampler_id,
         seed_input_key=seed_key,
         sampler_node=sampler_id,
