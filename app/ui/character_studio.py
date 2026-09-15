@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.media.continuity import CharacterProfile
 from app.memory.store import StateStore
+from app.ui.character_continuity_lab import CharacterContinuityLab
 
 
 class CharacterStudio(QWidget):
@@ -34,6 +35,7 @@ class CharacterStudio(QWidget):
         super().__init__(parent)
         self.store = store
         self.profile: CharacterProfile | None = None
+        self._continuity_lab: CharacterContinuityLab | None = None
 
         self.key_edit = QLineEdit(key)
         self.key_edit.setPlaceholderText("persona-main")
@@ -83,10 +85,15 @@ class CharacterStudio(QWidget):
         )
         self.note.setWordWrap(True)
 
+        self.continuity_lab_button = QPushButton("🧪 Character-Continuity testen")
+        self.continuity_lab_button.setToolTip(
+            "Mit der festen lokalen Referenz mehrere Bildausschnitte rendern und die Identitätsstabilität bewerten"
+        )
         self.save_button = QPushButton("Visuelle Identität speichern")
         self.refresh_button = QPushButton("Aktualisieren")
         buttons = QHBoxLayout()
         buttons.addWidget(self.refresh_button)
+        buttons.addWidget(self.continuity_lab_button)
         buttons.addStretch(1)
         buttons.addWidget(self.save_button)
 
@@ -100,6 +107,7 @@ class CharacterStudio(QWidget):
         self.refresh_button.clicked.connect(self.load_profile)
         self.save_button.clicked.connect(self.save_profile)
         self.new_seed_button.clicked.connect(self.rotate_seed)
+        self.continuity_lab_button.clicked.connect(self.open_continuity_lab)
         self.load_profile()
 
     def set_key(self, key: str) -> None:
@@ -118,15 +126,18 @@ class CharacterStudio(QWidget):
         self.appearance.setPlainText(profile.appearance_prompt)
         self.revision.setText(str(profile.appearance_revision))
 
+        reference_ready = False
         if profile.reference_media_path:
             path = Path(profile.reference_media_path).expanduser()
-            state = "vorhanden" if path.exists() else "Datei fehlt"
+            reference_ready = path.exists() and path.is_file()
+            state = "vorhanden" if reference_ready else "Datei fehlt"
             self.reference.setText(
                 f"#{profile.reference_media_id or '?'} · {path} · {state}"
             )
         else:
             self.reference.setText("Keine feste Referenz; positives Bild-Feedback kann als Fallback dienen.")
 
+        self.continuity_lab_button.setEnabled(reference_ready)
         self.stats.setText(
             f"Generierungen: {profile.generation_count} · "
             f"positives Bild-Feedback: {profile.positive_feedback} · "
@@ -164,3 +175,27 @@ class CharacterStudio(QWidget):
         self.store.save_character_profile(self.profile)
         self.load_profile()
         self.profile_changed.emit(self.profile.key)
+
+    def open_continuity_lab(self) -> None:
+        if self.profile is None:
+            self.load_profile()
+        if self.profile is None:
+            return
+        window = self._continuity_lab
+        if window is not None and window.isVisible():
+            window.raise_()
+            window.activateWindow()
+            return
+        window = CharacterContinuityLab(
+            self.store,
+            continuity_key=self.profile.key,
+            parent=None,
+        )
+        window.media_created.connect(self.load_profile)
+        window.feedback_changed.connect(self.load_profile)
+        window.destroyed.connect(self._continuity_lab_closed)
+        self._continuity_lab = window
+        window.show()
+
+    def _continuity_lab_closed(self, _object=None) -> None:
+        self._continuity_lab = None
