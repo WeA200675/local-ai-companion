@@ -11,6 +11,7 @@ from app.media.setup_assistant import (
     inspect_for_auto_setup,
     run_workflow_smoke_test,
     save_generated_profile,
+    settings_with_auto_setup,
 )
 from app.settings import AppSettings
 
@@ -82,6 +83,32 @@ def test_generated_catalog_is_app_owned_and_mergeable(tmp_path) -> None:
     assert target == tmp_path / "workflow_profiles.generated.json"
     assert {profile.id for profile in catalog.profiles} == {"auto-still", "auto-second"}
     assert all(profile.workflow_path.is_absolute() for profile in catalog.profiles)
+
+
+def test_wizard_applies_only_media_mapping_fields(tmp_path) -> None:
+    workflow = tmp_path / "still.json"
+    workflow.write_text(json.dumps(_workflow_payload()), encoding="utf-8")
+    setup = inspect_for_auto_setup(workflow)
+    original = AppSettings(
+        model_name="local-model:test",
+        chat_temperature=1.15,
+        adaptive_memory_enabled=False,
+        media_url="http://127.0.0.1:8188",
+        media_output_dir=str(tmp_path / "generated"),
+    )
+    catalog = tmp_path / "profiles.json"
+
+    configured = settings_with_auto_setup(original, setup, catalog)
+
+    assert configured.media_enabled is True
+    assert configured.media_workflow == str(workflow)
+    assert configured.media_profile_catalog == str(catalog)
+    assert configured.media_positive_node == "6"
+    assert configured.media_negative_node == "7"
+    assert configured.media_seed_node == "3"
+    assert configured.model_name == "local-model:test"
+    assert configured.chat_temperature == 1.15
+    assert configured.adaptive_memory_enabled is False
 
 
 def test_smoke_test_queues_real_workflow_and_downloads_result(tmp_path) -> None:
