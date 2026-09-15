@@ -66,6 +66,30 @@ def _profile_id(path: Path) -> str:
     return f"auto-{slug}"
 
 
+def _checkpoint_name(path: Path) -> str:
+    """Read technical checkpoint provenance without making any license claim."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for node in payload.values():
+        if not isinstance(node, dict):
+            continue
+        class_type = str(node.get("class_type") or "").casefold()
+        if "checkpointloader" not in class_type:
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        checkpoint = inputs.get("ckpt_name")
+        if isinstance(checkpoint, str) and checkpoint.strip():
+            return checkpoint.strip()
+    return ""
+
+
 def _infer_kinds(
     workflow: Path,
     inspection: WorkflowInspection,
@@ -111,6 +135,7 @@ def inspect_for_auto_setup(path: str | Path) -> WorkflowAutoSetup:
         positive_node=inspection.positive_node or "",
         negative_node=inspection.negative_node or "",
         seed_node=inspection.seed_node or "",
+        checkpoint_name=_checkpoint_name(workflow),
         priority=50,
         enabled=True,
         render_quality="balanced",

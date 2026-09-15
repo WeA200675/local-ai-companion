@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field, field_validator
 
 MediaKind = Literal["image", "gif", "video"]
 RenderQuality = Literal["draft", "balanced", "high"]
+RoutingFocus = Literal[
+    "portrait",
+    "full_body",
+    "detail",
+    "environment",
+    "character",
+    "motion",
+]
 _RENDER_KEYS = {"width", "height", "steps", "cfg", "denoise", "frames", "fps"}
 
 
@@ -42,6 +50,12 @@ class WorkflowProfile(BaseModel):
     priority: int = Field(default=0, ge=-100, le=100)
     enabled: bool = True
 
+    # Optional provenance/suitability metadata. It never implies a license: the
+    # confirmation flag only records an explicit local user confirmation.
+    checkpoint_name: str = ""
+    checkpoint_license_confirmed: bool = False
+    routing_tags: list[RoutingFocus] = Field(default_factory=list)
+
     # Optional local render policy. Old catalogs remain valid; when no explicit
     # bindings are supplied ComfyUIClient attempts safe common-input detection.
     render_quality: RenderQuality = "balanced"
@@ -57,16 +71,22 @@ class WorkflowProfile(BaseModel):
         "seed_node",
         "reference_node",
         "reference_input_key",
+        "checkpoint_name",
         mode="before",
     )
     @classmethod
     def _strip_strings(cls, value: object) -> str:
         return str(value or "").strip()
 
+    @field_validator("kinds", "routing_tags")
+    @classmethod
+    def _unique_lists(cls, value: list[object]) -> list[object]:
+        return list(dict.fromkeys(value))
+
     @field_validator("kinds")
     @classmethod
-    def _unique_kinds(cls, value: list[MediaKind]) -> list[MediaKind]:
-        return list(dict.fromkeys(value or ["image"]))
+    def _nonempty_kinds(cls, value: list[MediaKind]) -> list[MediaKind]:
+        return value or ["image"]
 
     @field_validator("render_bindings")
     @classmethod
@@ -119,14 +139,18 @@ def choose_workflow_profile(
     character_focus: bool,
     reference_available: bool,
     reference_supported_ids: set[str] | None = None,
+    focus_tags: set[str] | None = None,
+    performance_scores: dict[str, int] | None = None,
 ) -> WorkflowProfile | None:
     """Deterministically route a media intent to the best enabled local workflow.
 
-    ``reference_supported_ids`` is optional for backward compatibility. When
-    supplied, a profile only receives the reference-image routing bonus if its
-    actual workflow mapping has been validated by the capability inspector.
+    Routing combines explicit priority, reference/character suitability, optional
+    declared routing tags, and bounded scores learned from explicit local media
+    feedback. Feedback remains soft: it cannot make an invalid workflow runnable.
     """
 
+    requested_focus = focus_tags or set()
+    learned = performance_scores or {}
     candidates: list[tuple[int, str, WorkflowProfile]] = []
     for profile in profiles:
         if not profile.enabled or kind not in profile.kinds:
@@ -146,6 +170,15 @@ def choose_workflow_profile(
         )
         if reference_available and reference_supported:
             score += 20
+
+        declared = set(profile.routing_tags)
+        overlap = declared.intersection(requested_focus)
+        if overlap:
+            score += 12 * len(overlap)
+        elif declared and requested_focus:
+            score -= 4
+
+        score += max(-40, min(40, int(learned.get(profile.id, 0))))
         candidates.append((score, profile.id, profile))
 
     if not candidates:
