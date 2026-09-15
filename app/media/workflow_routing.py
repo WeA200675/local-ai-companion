@@ -40,7 +40,10 @@ class WorkflowPerformance:
 
 
 def _folded_text(*parts: object) -> str:
-    return " ".join(str(part or "").casefold().replace("-", " ").split() for part in parts)
+    return " ".join(
+        " ".join(str(part or "").casefold().replace("-", " ").split())
+        for part in parts
+    ).strip()
 
 
 def intent_focus_tags(intent: MediaIntent) -> tuple[str, ...]:
