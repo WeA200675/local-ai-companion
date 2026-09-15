@@ -27,12 +27,23 @@ def test_non_apache_qwen25_variants_are_excluded() -> None:
 
 def test_uncensored_suffix_is_source_backed_and_not_a_ranking_flag() -> None:
     marked = [item for item in strict_open_source_models() if item.uncensored]
-    assert [item.ollama_model for item in marked] == ["dolphin-mistral:7b"]
-    assert marked[0].display_name.endswith(" (unzensiert)")
-    assert "Ollama" in marked[0].note
+    assert [item.ollama_model for item in marked] == [
+        "dolphin-mistral:7b",
+        "dolphin-mixtral:8x7b",
+        "dolphin-mixtral:8x22b",
+    ]
+    assert all(item.display_name.endswith(" (unzensiert)") for item in marked)
+    assert all("Ollama" in item.note for item in marked)
 
 
-def test_custom_license_uncensored_llama_models_are_not_in_catalog() -> None:
+def test_custom_or_research_license_uncensored_models_are_not_in_catalog() -> None:
     assert catalog_model("llama2-uncensored:7b") is None
     assert catalog_model("wizard-vicuna-uncensored:7b") is None
     assert catalog_model("wizardlm-uncensored:13b") is None
+    assert catalog_model("dolphin-phi:2.7b") is None
+
+
+def test_permissive_mistral_and_mixtral_variants_are_available() -> None:
+    assert catalog_model("mistral:7b-instruct") is not None
+    assert catalog_model("mixtral:8x7b") is not None
+    assert catalog_model("mixtral:8x22b") is not None
