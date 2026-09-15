@@ -59,13 +59,22 @@ class SuitabilityWorker(QThread):
 
 
 class MediaSuitabilityWindow(QWidget):
-    def __init__(self) -> None:
-        super().__init__()
+    feedback_changed = Signal()
+    media_created = Signal()
+
+    def __init__(
+        self,
+        store: StateStore | None = None,
+        settings: AppSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
         self.setWindowTitle("Local AI Companion — Medien-Eignungslabor")
         self.resize(1040, 780)
 
-        self.store = StateStore(make_session_factory())
-        self.settings = self.store.load_settings(AppSettings.from_env())
+        self.store = store or StateStore(make_session_factory())
+        loaded_settings = settings or self.store.load_settings(AppSettings.from_env())
+        self.settings = loaded_settings.model_copy(deep=True)
         self.profiles: list[WorkflowProfile] = []
         self._worker: SuitabilityWorker | None = None
         self._results: list[SuitabilityProbeResult] = []
@@ -225,6 +234,7 @@ class MediaSuitabilityWindow(QWidget):
             description=f"Eignungstest: {result.probe.label}",
         )
         self.preview.setVisible(True)
+        self.media_created.emit()
 
     def _completed(self, results: list[SuitabilityProbeResult]) -> None:
         self.status.setText(
@@ -279,6 +289,7 @@ class MediaSuitabilityWindow(QWidget):
         self.status.setText(
             f"{result.probe.label}: {label}. Die automatische Workflow-Auswahl nutzt dieses Feedback lokal als weiches Signal."
         )
+        self.feedback_changed.emit()
 
 
 def main() -> int:
