@@ -113,7 +113,18 @@ def _infer_kinds(
     return ("image",)
 
 
-def inspect_for_auto_setup(path: str | Path) -> WorkflowAutoSetup:
+def inspect_for_auto_setup(
+    path: str | Path,
+    *,
+    checkpoint_license_confirmed: bool = False,
+) -> WorkflowAutoSetup:
+    """Inspect a workflow and optionally preserve an explicit user license assertion.
+
+    ``checkpoint_license_confirmed`` is provenance only: it means the user stated
+    that they checked the checkpoint license. The app still does not infer or
+    record a concrete license identifier from the checkpoint filename.
+    """
+
     workflow = Path(path).expanduser()
     inspection = inspect_workflow_file(workflow)
     warnings = list(inspection.warnings)
@@ -126,6 +137,7 @@ def inspect_for_auto_setup(path: str | Path) -> WorkflowAutoSetup:
             warnings=tuple(warnings),
         )
 
+    checkpoint = _checkpoint_name(workflow)
     kinds = _infer_kinds(workflow, inspection)
     profile = WorkflowProfile(
         id=_profile_id(workflow),
@@ -135,7 +147,8 @@ def inspect_for_auto_setup(path: str | Path) -> WorkflowAutoSetup:
         positive_node=inspection.positive_node or "",
         negative_node=inspection.negative_node or "",
         seed_node=inspection.seed_node or "",
-        checkpoint_name=_checkpoint_name(workflow),
+        checkpoint_name=checkpoint,
+        checkpoint_license_confirmed=bool(checkpoint and checkpoint_license_confirmed),
         priority=50,
         enabled=True,
         render_quality="balanced",
