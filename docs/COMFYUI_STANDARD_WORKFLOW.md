@@ -25,11 +25,13 @@ The resulting workflow exposes literal `width`, `height`, `seed`, `steps`, `cfg`
 
 Sampler and scheduler choices are read from the local ComfyUI `KSampler` object metadata. The builder prefers common core choices such as `euler` and `normal` when available and otherwise uses a locally reported choice.
 
-## License boundary
+## License boundary and provenance
 
 ComfyUI `object_info` is a technical node/model inventory, not a trusted license registry. A checkpoint name is therefore **never** interpreted as proof that its weights are Open Source. The UI requires an explicit license confirmation before it generates a workflow from a discovered checkpoint.
 
-This preserves the project rule that required components must be Open Source while avoiding false license claims about user-installed checkpoints.
+For a workflow generated from that exact confirmed checkpoint selection, the resulting local workflow profile stores `checkpoint_license_confirmed=true`. This field records only the user's explicit statement that the license was separately checked. It does not store or infer a license identifier, and changing the selected checkpoint or workflow clears the transient confirmation until it is made again.
+
+Manually supplied workflows and automatically inspected workflows remain unconfirmed by default. This preserves the project rule that required components must be Open Source while avoiding false license claims about user-installed checkpoints.
 
 ## Privacy
 

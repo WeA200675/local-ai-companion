@@ -49,16 +49,21 @@ class MediaSetupWorker(QThread):
         workflow_path: str,
         *,
         run_render_test: bool,
+        checkpoint_license_confirmed: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings = settings.model_copy(deep=True)
         self._workflow_path = workflow_path
         self._run_render_test = run_render_test
+        self._checkpoint_license_confirmed = checkpoint_license_confirmed
 
     def run(self) -> None:
         try:
-            setup = inspect_for_auto_setup(self._workflow_path)
+            setup = inspect_for_auto_setup(
+                self._workflow_path,
+                checkpoint_license_confirmed=self._checkpoint_license_confirmed,
+            )
             if not setup.ready:
                 details = [setup.inspection.error, *setup.warnings]
                 message = "\n".join(item for item in details if item) or "Workflow nicht automatisch nutzbar"
@@ -112,6 +117,7 @@ class MediaSetupWizard(QDialog):
         self._checkpoint_worker: CheckpointDiscoveryWorker | None = None
         self._inspection: WorkflowAutoSetup | None = None
         self._checkpoint_inventory: ComfyUICheckpointInventory | None = None
+        self._license_confirmed_workflow_path = ""
 
         self.setWindowTitle("Local AI Companion — Medien automatisch einrichten")
         self.resize(960, 790)
@@ -179,7 +185,7 @@ class MediaSetupWizard(QDialog):
         )
         self.checkpoint_license_confirmed.setToolTip(
             "ComfyUI liefert über object_info nur technische Namen, keine verlässliche Lizenzmetadatenbank. "
-            "Darum behauptet die App für einen gefundenen Checkpoint keine Lizenz."
+            "Die App speichert nur deine explizite Bestätigung, nicht eine aus dem Dateinamen abgeleitete Lizenz."
         )
 
         self.status = QLabel("Noch kein Workflow geprüft.")
@@ -226,8 +232,8 @@ class MediaSetupWizard(QDialog):
         browse_output.clicked.connect(self._choose_output)
         self.workflow_path.textChanged.connect(self._workflow_changed)
         self.comfy_url.textChanged.connect(self._endpoint_changed)
-        self.checkpoint_combo.currentIndexChanged.connect(self._refresh_generate_button)
-        self.checkpoint_license_confirmed.toggled.connect(self._refresh_generate_button)
+        self.checkpoint_combo.currentIndexChanged.connect(self._checkpoint_changed)
+        self.checkpoint_license_confirmed.toggled.connect(self._checkpoint_license_toggled)
         self.discover_checkpoints_button.clicked.connect(self.discover_checkpoints)
         self.generate_workflow_button.clicked.connect(self.generate_standard_workflow)
         self.inspect_button.clicked.connect(self.inspect_workflow)
@@ -260,6 +266,9 @@ class MediaSetupWizard(QDialog):
             self.output_dir.setText(path)
 
     def _workflow_changed(self) -> None:
+        current = self.workflow_path.text().strip()
+        if current != self._license_confirmed_workflow_path:
+            self._license_confirmed_workflow_path = ""
         self._inspection = None
         self.run_button.setEnabled(False)
         self.preview.setVisible(False)
@@ -267,8 +276,21 @@ class MediaSetupWizard(QDialog):
 
     def _endpoint_changed(self) -> None:
         self._checkpoint_inventory = None
+        self._license_confirmed_workflow_path = ""
         self.checkpoint_combo.clear()
         self.checkpoint_combo.setEnabled(False)
+        self.checkpoint_license_confirmed.setChecked(False)
+        self._refresh_generate_button()
+
+    def _checkpoint_changed(self) -> None:
+        self._license_confirmed_workflow_path = ""
+        if self.checkpoint_license_confirmed.isChecked():
+            self.checkpoint_license_confirmed.setChecked(False)
+        self._refresh_generate_button()
+
+    def _checkpoint_license_toggled(self, checked: bool) -> None:
+        if not checked:
+            self._license_confirmed_workflow_path = ""
         self._refresh_generate_button()
 
     def _refresh_generate_button(self) -> None:
@@ -279,6 +301,10 @@ class MediaSetupWizard(QDialog):
             and not (self._checkpoint_worker and self._checkpoint_worker.isRunning())
         )
         self.generate_workflow_button.setEnabled(ready)
+
+    def _current_workflow_license_confirmed(self) -> bool:
+        current = self.workflow_path.text().strip()
+        return bool(current and current == self._license_confirmed_workflow_path)
 
     def discover_checkpoints(self) -> None:
         if self._checkpoint_worker is not None and self._checkpoint_worker.isRunning():
@@ -299,6 +325,8 @@ class MediaSetupWizard(QDialog):
 
     def _checkpoints_discovered(self, inventory: ComfyUICheckpointInventory) -> None:
         self._checkpoint_inventory = inventory
+        self._license_confirmed_workflow_path = ""
+        self.checkpoint_license_confirmed.setChecked(False)
         self.checkpoint_combo.clear()
         for checkpoint in inventory.checkpoints:
             self.checkpoint_combo.addItem(checkpoint)
@@ -322,8 +350,10 @@ class MediaSetupWizard(QDialog):
 
     def _checkpoint_discovery_failed(self, error: str) -> None:
         self._checkpoint_inventory = None
+        self._license_confirmed_workflow_path = ""
         self.checkpoint_combo.clear()
         self.checkpoint_combo.setEnabled(False)
+        self.checkpoint_license_confirmed.setChecked(False)
         self.status.setText("Checkpoint-Erkennung fehlgeschlagen.")
         self.output.setPlainText(f"[FEHLER] {error}")
 
@@ -362,11 +392,13 @@ class MediaSetupWizard(QDialog):
             QMessageBox.warning(self, "Standard-Workflow", str(exc))
             return
 
+        self._license_confirmed_workflow_path = str(path)
         self.workflow_path.setText(str(path))
         self.output.setPlainText(
             "[OK] Lokaler Standard-Bildworkflow erzeugt.\n"
             f"Checkpoint: {checkpoint}\n"
             f"Datei: {path}\n"
+            "Lizenz-Prüfung: vom Benutzer ausdrücklich bestätigt; keine Lizenz wurde aus dem Dateinamen abgeleitet.\n"
             "Nodes: CheckpointLoaderSimple → CLIPTextEncode (+/-) → EmptyLatentImage → KSampler → VAEDecode → SaveImage\n\n"
             "Der Checkpoint wurde nicht heruntergeladen oder verändert."
         )
@@ -390,7 +422,10 @@ class MediaSetupWizard(QDialog):
                 "Wähle einen exportierten ComfyUI API-Workflow oder erzeuge oben automatisch einen Standard-Bildworkflow.",
             )
             return
-        setup = inspect_for_auto_setup(path)
+        setup = inspect_for_auto_setup(
+            path,
+            checkpoint_license_confirmed=self._current_workflow_license_confirmed(),
+        )
         self._inspection = setup
         self.run_button.setEnabled(setup.ready)
 
@@ -413,6 +448,16 @@ class MediaSetupWizard(QDialog):
             f"Medienarten: {', '.join(setup.profile.kinds)}",
             f"Render-Steuerung: {controls}",
         ]
+        if setup.profile.checkpoint_name:
+            lines.append(f"Checkpoint: {setup.profile.checkpoint_name}")
+            lines.append(
+                "Checkpoint-Lizenz-Prüfung: "
+                + (
+                    "explizit bestätigt"
+                    if setup.profile.checkpoint_license_confirmed
+                    else "nicht im Profil bestätigt"
+                )
+            )
         if setup.warnings:
             lines.append("")
             lines.append("Hinweise:")
@@ -447,6 +492,7 @@ class MediaSetupWizard(QDialog):
             settings,
             self.workflow_path.text().strip(),
             run_render_test=self.run_render_test.isChecked(),
+            checkpoint_license_confirmed=self._current_workflow_license_confirmed(),
             parent=self,
         )
         worker.completed.connect(self._setup_completed)
@@ -472,6 +518,16 @@ class MediaSetupWizard(QDialog):
             f"Profilkatalog: {catalog}",
             "[OK] Mediengenerierung wurde in den lokalen App-Einstellungen aktiviert.",
         ]
+        if setup.profile is not None and setup.profile.checkpoint_name:
+            lines.append(f"Checkpoint: {setup.profile.checkpoint_name}")
+            lines.append(
+                "Lizenz-Prüfstatus im Profil: "
+                + (
+                    "explizite Benutzerbestätigung gespeichert"
+                    if setup.profile.checkpoint_license_confirmed
+                    else "nicht bestätigt"
+                )
+            )
         if render_result is not None:
             lines.extend(
                 [
