@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import app.main as desktop_main
+from app.ai.model import OllamaClient
 from app.ai.model_catalog import catalog_model
 from app.ai.model_fallback import FallbackOllamaClient
 from app.ai.model_fallback_state import ModelFallbackPolicy, ModelFallbackRepository
@@ -47,7 +47,7 @@ def configured_model_client_class(fallbacks: Sequence[str]):
 
     fallback_chain = tuple(fallbacks)
     if not fallback_chain:
-        return desktop_main.OllamaClient
+        return OllamaClient
 
     class ConfiguredFallbackClient(FallbackOllamaClient):
         def __init__(self, *args, **kwargs) -> None:
@@ -59,6 +59,10 @@ def configured_model_client_class(fallbacks: Sequence[str]):
 
 
 def main() -> int:
+    # Delay the Qt-heavy desktop import until actual application launch. This
+    # keeps pure fallback-policy tests usable on headless CI runners without EGL.
+    import app.main as desktop_main
+
     store = StateStore(make_session_factory())
     settings = store.load_settings(AppSettings.from_env())
     compatibility_repository = AdultModelCompatibilityRepository(store)
