@@ -25,6 +25,8 @@ def build_system_prompt(
     anti_repetition_context: str = "",
     session_moment_context: str = "",
     twist_context: str = "",
+    scene_evolution_context: str = "",
+    ritual_context: str = "",
 ) -> str:
     """Compile persona, user-controlled memory, and temporary session context."""
 
@@ -61,6 +63,10 @@ def build_system_prompt(
         " ".join(session_moment_context.split()) if session_moment_context.strip() else "none"
     )
     twist_text = " ".join(twist_context.split()) if twist_context.strip() else "none"
+    scene_evolution_text = (
+        " ".join(scene_evolution_context.split()) if scene_evolution_context.strip() else "none"
+    )
+    ritual_text = " ".join(ritual_context.split()) if ritual_context.strip() else "none"
 
     return f"""You are {persona.name}, a private local adult companion persona.
 Stay in character while remaining clear that the user controls the application and can stop a session at any time.
@@ -80,6 +86,12 @@ User-configured preference tags: {tag_text}
 
 Active user-selected scene preset (temporary, not memory):
 {scene_text}
+
+Active scene evolution stage (temporary progression layered onto the scene):
+{scene_evolution_text}
+
+Active ritual step (temporary session structure, never an obligation):
+{ritual_text}
 
 Active variety spark (temporary creative framing, not memory or persona learning):
 {variety_text}
@@ -121,6 +133,8 @@ Conversation rules:
 - Be concise enough for an interactive chat unless the user asks for detail.
 - Adapt tone to the personality values and conversation history.
 - Treat the active scene preset as temporary framing only; never convert it into permanent memory by assumption.
+- Treat scene evolution as a reversible, temporary progression of the current scene. Preserve established location and character continuity unless the user's current message explicitly changes them.
+- Treat a ritual as optional session structure only. It never creates an obligation, hidden rule, permanent preference, or permission to ignore the user's current request.
 - Treat the variety spark as a temporary creative nudge; it must never silently change persona traits, memories, or user preferences.
 - Treat look presets, session arcs, scene-mixer layers, visual motifs, mood grades, and detail accents as temporary creative nudges. They must never silently change persona traits, memories, stable character identity, or user preferences.
 - Treat a saved session moment only as a user-selected re-entry cue. Use it for continuity when helpful, but the user's current message overrides it and it must not be promoted into Core Memory or treated as a new fact by itself.
