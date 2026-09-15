@@ -32,6 +32,27 @@ def test_visual_prompt_includes_intent_and_adult_guardrails() -> None:
     assert "explicit sex act" in negative
 
 
+def test_visual_prompt_routes_avoid_tags_only_to_negative_prompt() -> None:
+    persona = PersonaState()
+    intent = MediaIntent(generate=True, mood="sensual", theme="adult editorial")
+
+    positive, negative = build_visual_prompt(
+        intent,
+        persona,
+        [
+            "erotic adult atmosphere",
+            "fetish-inspired adult fashion",
+            "avoid:example boundary",
+        ],
+    )
+
+    assert "erotic adult atmosphere" in positive
+    assert "fetish-inspired adult fashion" in positive
+    assert "example boundary" not in positive
+    assert "user boundary: example boundary" in negative
+    assert "explicit sex act" in negative
+
+
 def test_comfyui_workflow_injection(tmp_path) -> None:
     workflow_path = tmp_path / "workflow.json"
     workflow_path.write_text(

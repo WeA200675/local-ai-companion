@@ -78,16 +78,26 @@ class AdultModeAwareChatWidget(ModeAwareChatWidget):
 
     def _effective_tags(self) -> list[str]:
         tags = super()._effective_tags()
-        active = self._active_storyboard()
-        if active is None:
-            return tags
         seen = {item.casefold() for item in tags}
-        for tag in active.style_tags:
+
+        # Adult intensity now participates in the same temporary visual-tag path
+        # as looks, motifs and scene layers. The tags express only non-graphic
+        # styling/composition. ``avoid:`` tags encode user-authored hard boundaries.
+        for tag in self.adult_intensity.visual_style_tags():
             clean = tag.strip()
             key = clean.casefold()
             if clean and key not in seen:
                 seen.add(key)
                 tags.append(clean)
+
+        active = self._active_storyboard()
+        if active is not None:
+            for tag in active.style_tags:
+                clean = tag.strip()
+                key = clean.casefold()
+                if clean and key not in seen:
+                    seen.add(key)
+                    tags.append(clean)
         return tags
 
     def _creative_signature(self) -> str:
@@ -132,8 +142,8 @@ class AdultModeAwareChatWidget(ModeAwareChatWidget):
 
     def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
         # The media planner has its own non-graphic adult guardrails. Passing a
-        # media-safe summary lets visual tone follow the session without turning
-        # chat intensity into permission for graphic imagery.
+        # structured media-safe summary lets visual tone follow the session while
+        # explicit ``avoid:`` preference tags carry hard boundaries to the prompt compiler.
         parts = [user_text, self.adult_intensity.visual_text()]
         storyboard = self._storyboard_context()
         if storyboard:
