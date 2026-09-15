@@ -3,13 +3,28 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 import json
-from typing import Any, Literal
+import time
+from typing import Any, Literal, TypeVar
 
 import httpx
 
 from app.ai.backend_health import classify_ollama_failure
 
 Role = Literal["user", "assistant", "system"]
+RetryCallback = Callable[[int, int, str], None]
+T = TypeVar("T")
+
+_RETRYABLE_FAILURE_CODES = {"unreachable", "backend_failure", "transport_error"}
+_RETRYABLE_ERROR_MARKERS = (
+    "llama-server process has terminated",
+    "inferenz-backend",
+    "backend ist mit http 5",
+    "endpoint ist nicht erreichbar",
+    "verbindung zu ollama",
+    "connection refused",
+    "connection reset",
+    "server disconnected",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,23 +36,37 @@ class ChatMessage:
 class LocalModelError(RuntimeError):
     """Raised when the local model backend cannot complete a request."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "unknown",
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
 
 class LocalModelTimeoutError(LocalModelError):
     """Raised when local inference stays silent longer than the read timeout."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="timeout", retryable=False)
 
 
 class OllamaClient:
     """Small synchronous adapter for an Ollama-compatible local HTTP API.
 
-    The desktop UI calls this client from worker threads. Normal structured
-    helper calls remain non-streaming, while interactive chat can consume
-    ``chat_stream`` incrementally and cooperatively cancel an in-flight reply.
+    Interactive chat is streamed from worker threads; helper calls are normally
+    non-streaming. Transient local Ollama transport/backend failures are retried
+    automatically. The default policy performs three reconnect attempts after
+    the initial failed request. Timeouts, missing models and ordinary 4xx errors
+    are not retried automatically.
 
-    Local inference can legitimately take much longer than an ordinary HTTP
-    request, especially after a cold model load or when running CPU-only. The
-    default read timeout therefore allows ten minutes of inactivity while the
-    connection timeout stays short. ``keep_alive`` asks Ollama to keep the model
-    resident for a finite period so repeated replies avoid unnecessary reloads.
+    A streaming request is retried only before the first response token arrives.
+    Once partial text has reached the UI, replaying the request could duplicate or
+    splice text, so an interruption is surfaced instead of silently restarting.
     """
 
     def __init__(
@@ -49,27 +78,118 @@ class OllamaClient:
         *,
         connect_timeout: float = 10.0,
         keep_alive: str | int = "20m",
+        reconnect_attempts: int = 3,
+        reconnect_backoff_seconds: float | None = None,
+        retry_callback: RetryCallback | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = float(timeout)
         self.connect_timeout = float(connect_timeout)
         self.keep_alive = keep_alive
+        self.reconnect_attempts = max(0, int(reconnect_attempts))
+        self.retry_callback = retry_callback
         self._owns_client = client is None
-        if client is None:
-            request_timeout = httpx.Timeout(
-                connect=self.connect_timeout,
-                read=self.timeout,
-                write=min(self.timeout, 60.0),
-                pool=min(self.connect_timeout, 10.0),
-            )
-            self._client = httpx.Client(timeout=request_timeout)
-        else:
-            self._client = client
+        if reconnect_backoff_seconds is None:
+            # Injected clients are primarily used by deterministic tests and local
+            # probes; do not make those sleep between mocked retries.
+            reconnect_backoff_seconds = 0.75 if self._owns_client else 0.0
+        self.reconnect_backoff_seconds = max(0.0, float(reconnect_backoff_seconds))
+        self._client = client if client is not None else self._new_http_client()
+
+    def _new_http_client(self) -> httpx.Client:
+        request_timeout = httpx.Timeout(
+            connect=self.connect_timeout,
+            read=self.timeout,
+            write=min(self.timeout, 60.0),
+            pool=min(self.connect_timeout, 10.0),
+        )
+        return httpx.Client(timeout=request_timeout)
 
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+
+    def _reset_owned_connection(self) -> None:
+        """Drop pooled sockets before a retry so a restarted Ollama is contacted fresh."""
+
+        if not self._owns_client:
+            return
+        try:
+            self._client.close()
+        finally:
+            self._client = self._new_http_client()
+
+    def _retry_delay(self, retry_number: int) -> float:
+        if self.reconnect_backoff_seconds <= 0:
+            return 0.0
+        # Short exponential backoff: 0.75s, 1.5s, 3s with the default policy.
+        return min(5.0, self.reconnect_backoff_seconds * (2 ** max(0, retry_number - 1)))
+
+    @staticmethod
+    def _should_retry_error(error: LocalModelError) -> bool:
+        if isinstance(error, LocalModelTimeoutError):
+            return False
+        if error.retryable:
+            return True
+        folded = str(error).casefold()
+        return any(marker in folded for marker in _RETRYABLE_ERROR_MARKERS)
+
+    def _notify_retry(
+        self,
+        retry_number: int,
+        error: LocalModelError,
+        callback: RetryCallback | None = None,
+    ) -> None:
+        target = callback or self.retry_callback
+        if target is not None:
+            target(retry_number, self.reconnect_attempts, str(error))
+
+    def _wait_before_retry(
+        self,
+        retry_number: int,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> bool:
+        delay = self._retry_delay(retry_number)
+        if delay <= 0:
+            return not (should_stop is not None and should_stop())
+        deadline = time.monotonic() + delay
+        while True:
+            if should_stop is not None and should_stop():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            time.sleep(min(0.1, remaining))
+
+    def _retry_exhausted_error(self, error: LocalModelError) -> LocalModelError:
+        return LocalModelError(
+            f"{error} Automatische Ollama-Wiederverbindung blieb nach "
+            f"{self.reconnect_attempts} Neuverbindungsversuch(en) erfolglos.",
+            code=error.code,
+            retryable=error.retryable,
+        )
+
+    def _run_with_reconnects(
+        self,
+        operation: Callable[[], T],
+        *,
+        retry_callback: RetryCallback | None = None,
+    ) -> T:
+        retries_used = 0
+        while True:
+            try:
+                return operation()
+            except LocalModelError as exc:
+                if not self._should_retry_error(exc):
+                    raise
+                if retries_used >= self.reconnect_attempts:
+                    raise self._retry_exhausted_error(exc) from exc
+                retries_used += 1
+                self._notify_retry(retries_used, exc, retry_callback)
+                self._reset_owned_connection()
+                self._wait_before_retry(retries_used)
 
     def is_available(self) -> bool:
         try:
@@ -82,30 +202,41 @@ class OllamaClient:
     def list_models(self) -> list[str]:
         """Return installed model names reported by an Ollama-compatible backend."""
 
-        try:
-            response = self._client.get(f"{self.base_url}/api/tags")
-            response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPError as exc:
-            failure = classify_ollama_failure(exc, model_name=self.model)
-            raise LocalModelError(f"Could not list local models: {failure.message()}") from exc
-        except ValueError as exc:
-            raise LocalModelError(f"Could not list local models: invalid JSON response: {exc}") from exc
+        def request() -> list[str]:
+            try:
+                response = self._client.get(f"{self.base_url}/api/tags")
+                response.raise_for_status()
+                data = response.json()
+            except httpx.TimeoutException as exc:
+                raise self._timeout_error() from exc
+            except httpx.HTTPError as exc:
+                failure = classify_ollama_failure(exc, model_name=self.model)
+                raise LocalModelError(
+                    f"Could not list local models: {failure.message()}",
+                    code=failure.code,
+                    retryable=failure.code in _RETRYABLE_FAILURE_CODES,
+                ) from exc
+            except ValueError as exc:
+                raise LocalModelError(
+                    f"Could not list local models: invalid JSON response: {exc}"
+                ) from exc
 
-        if not isinstance(data, dict):
-            raise LocalModelError("Local model list returned an invalid response")
-        models = data.get("models")
-        if not isinstance(models, list):
-            raise LocalModelError("Local model list is missing the models array")
+            if not isinstance(data, dict):
+                raise LocalModelError("Local model list returned an invalid response")
+            models = data.get("models")
+            if not isinstance(models, list):
+                raise LocalModelError("Local model list is missing the models array")
 
-        names: list[str] = []
-        for item in models:
-            if not isinstance(item, dict):
-                continue
-            raw_name = item.get("name") or item.get("model")
-            if isinstance(raw_name, str) and raw_name.strip():
-                names.append(raw_name.strip())
-        return sorted(set(names), key=str.casefold)
+            names: list[str] = []
+            for item in models:
+                if not isinstance(item, dict):
+                    continue
+                raw_name = item.get("name") or item.get("model")
+                if isinstance(raw_name, str) and raw_name.strip():
+                    names.append(raw_name.strip())
+            return sorted(set(names), key=str.casefold)
+
+        return self._run_with_reconnects(request)
 
     def _wire_messages(
         self,
@@ -171,9 +302,24 @@ class OllamaClient:
             model_name=self.model,
             timeout_seconds=self.timeout,
         )
-        return LocalModelError(failure.message())
+        return LocalModelError(
+            failure.message(),
+            code=failure.code,
+            retryable=failure.code in _RETRYABLE_FAILURE_CODES,
+        )
 
-    def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _inference_error(message: str) -> LocalModelError:
+        clean = " ".join(message.split())
+        folded = clean.casefold()
+        retryable = any(marker in folded for marker in _RETRYABLE_ERROR_MARKERS)
+        return LocalModelError(
+            f"Ollama meldete einen Inferenzfehler: {clean}",
+            code="backend_failure" if retryable else "inference_error",
+            retryable=retryable,
+        )
+
+    def _post_chat_once(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self._client.post(f"{self.base_url}/api/chat", json=payload)
             response.raise_for_status()
@@ -188,8 +334,19 @@ class OllamaClient:
             raise LocalModelError("Local model returned an invalid response")
         error = data.get("error")
         if isinstance(error, str) and error.strip():
-            raise LocalModelError(f"Ollama meldete einen Inferenzfehler: {error.strip()}")
+            raise self._inference_error(error)
         return data
+
+    def _post_chat(
+        self,
+        payload: dict[str, Any],
+        *,
+        retry_callback: RetryCallback | None = None,
+    ) -> dict[str, Any]:
+        return self._run_with_reconnects(
+            lambda: self._post_chat_once(payload),
+            retry_callback=retry_callback,
+        )
 
     def chat(
         self,
@@ -199,6 +356,7 @@ class OllamaClient:
         temperature: float = 0.85,
         num_ctx: int | None = None,
         num_predict: int | None = None,
+        retry_callback: RetryCallback | None = None,
     ) -> str:
         payload = self._base_payload(
             messages,
@@ -208,33 +366,18 @@ class OllamaClient:
             num_ctx=num_ctx,
             num_predict=num_predict,
         )
-        data = self._post_chat(payload)
+        data = self._post_chat(payload, retry_callback=retry_callback)
         content = data.get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
             raise LocalModelError("Local model returned an empty or invalid response")
         return content.strip()
 
-    def chat_stream(
+    def _chat_stream_once(
         self,
-        messages: Iterable[ChatMessage],
+        payload: dict[str, Any],
         *,
-        system_prompt: str,
-        temperature: float = 0.85,
-        num_ctx: int | None = None,
-        num_predict: int | None = None,
-        should_stop: Callable[[], bool] | None = None,
+        should_stop: Callable[[], bool] | None,
     ) -> Iterator[str]:
-        """Yield an interactive reply as Ollama NDJSON chunks arrive."""
-
-        payload = self._base_payload(
-            messages,
-            system_prompt=system_prompt,
-            stream=True,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            num_predict=num_predict,
-        )
-        emitted = False
         try:
             with self._client.stream(
                 "POST",
@@ -257,11 +400,10 @@ class OllamaClient:
                         raise LocalModelError("Local model returned an invalid stream chunk")
                     error = data.get("error")
                     if isinstance(error, str) and error.strip():
-                        raise LocalModelError(f"Local model stream failed: {error.strip()}")
+                        raise self._inference_error(error)
                     message = data.get("message")
                     content = message.get("content") if isinstance(message, dict) else None
                     if isinstance(content, str) and content:
-                        emitted = True
                         yield content
                     if data.get("done") is True:
                         break
@@ -271,6 +413,54 @@ class OllamaClient:
             raise self._timeout_error() from exc
         except httpx.HTTPError as exc:
             raise self._model_http_error(exc) from exc
+
+    def chat_stream(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        system_prompt: str,
+        temperature: float = 0.85,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        retry_callback: RetryCallback | None = None,
+    ) -> Iterator[str]:
+        """Yield an interactive reply as Ollama NDJSON chunks arrive.
+
+        Transient Ollama failures are retried up to ``reconnect_attempts`` times,
+        but only while no response token has been emitted yet.
+        """
+
+        payload = self._base_payload(
+            messages,
+            system_prompt=system_prompt,
+            stream=True,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            num_predict=num_predict,
+        )
+        retries_used = 0
+        emitted = False
+
+        while True:
+            try:
+                for chunk in self._chat_stream_once(payload, should_stop=should_stop):
+                    emitted = True
+                    yield chunk
+                break
+            except LocalModelError as exc:
+                if emitted or not self._should_retry_error(exc):
+                    raise
+                if retries_used >= self.reconnect_attempts:
+                    raise self._retry_exhausted_error(exc) from exc
+                retries_used += 1
+                self._notify_retry(retries_used, exc, retry_callback)
+                self._reset_owned_connection()
+                if not self._wait_before_retry(
+                    retries_used,
+                    should_stop=should_stop,
+                ):
+                    return
 
         if should_stop is not None and should_stop():
             return
@@ -283,6 +473,7 @@ class OllamaClient:
         *,
         system_prompt: str,
         temperature: float = 0.25,
+        retry_callback: RetryCallback | None = None,
     ) -> dict[str, Any]:
         """Request a JSON object from an Ollama-compatible backend."""
 
@@ -293,7 +484,7 @@ class OllamaClient:
             temperature=temperature,
         )
         payload["format"] = "json"
-        data = self._post_chat(payload)
+        data = self._post_chat(payload, retry_callback=retry_callback)
         content = data.get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
             raise LocalModelError("Local model returned empty JSON content")
