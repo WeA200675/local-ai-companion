@@ -16,6 +16,9 @@ class WorkflowInspection:
     seed_node: str | None
     seed_input_key: str | None
     sampler_node: str | None
+    reference_node: str | None = None
+    reference_input_key: str | None = None
+    reference_candidates: tuple[tuple[str, str], ...] = ()
     warnings: tuple[str, ...] = ()
     error: str = ""
 
@@ -27,6 +30,10 @@ class WorkflowInspection:
             and self.negative_node
             and self.seed_node
         )
+
+    @property
+    def reference_detected(self) -> bool:
+        return bool(self.reference_node and self.reference_input_key)
 
 
 def _node_inputs(node: object) -> dict[str, Any] | None:
@@ -121,6 +128,84 @@ def _sampler_candidates(workflow: dict[str, Any]) -> list[tuple[str, str, str, s
     return candidates
 
 
+def _downstream_graph(workflow: dict[str, Any]) -> dict[str, set[str]]:
+    """Map each node id to nodes that consume one of its outputs."""
+
+    result: dict[str, set[str]] = {}
+    for consumer_id, node in workflow.items():
+        if not isinstance(consumer_id, str):
+            continue
+        inputs = _node_inputs(node)
+        if inputs is None:
+            continue
+        for upstream in _linked_node_ids(inputs):
+            result.setdefault(upstream, set()).add(consumer_id)
+    return result
+
+
+def _reaches_node(
+    graph: dict[str, set[str]],
+    start: str,
+    target: str,
+    *,
+    max_depth: int = 24,
+) -> bool:
+    queue: deque[tuple[str, int]] = deque([(start, 0)])
+    seen: set[str] = set()
+    while queue:
+        node_id, depth = queue.popleft()
+        if node_id == target:
+            return True
+        if node_id in seen or depth >= max_depth:
+            continue
+        seen.add(node_id)
+        for next_id in sorted(graph.get(node_id, ())):
+            if next_id not in seen:
+                queue.append((next_id, depth + 1))
+    return False
+
+
+def _reference_loader_candidates(
+    workflow: dict[str, Any],
+    sampler_id: str,
+) -> list[tuple[str, str]]:
+    """Find filename-style image loaders that actually feed the selected sampler.
+
+    ComfyUI reference pipelines normally upload a file and point a LoadImage-like
+    node at that filename. We intentionally avoid arbitrary `image` inputs on
+    processing nodes because those usually expect linked tensors rather than a
+    file name and therefore cannot safely receive the upload result directly.
+    """
+
+    graph = _downstream_graph(workflow)
+    candidates: list[tuple[str, str]] = []
+    for node_id, node in workflow.items():
+        if not isinstance(node_id, str) or not isinstance(node, dict):
+            continue
+        inputs = _node_inputs(node)
+        if inputs is None:
+            continue
+        class_type = " ".join(str(node.get("class_type") or "").casefold().split())
+        normalized = class_type.replace("_", "").replace(" ", "")
+        if "loadimage" not in normalized and "imageloader" not in normalized:
+            continue
+        input_key = ""
+        for key in ("image", "image_name", "filename", "file"):
+            if key not in inputs:
+                continue
+            value = inputs[key]
+            if _linked_node_id(value) is not None:
+                continue
+            if isinstance(value, (str, type(None))):
+                input_key = key
+                break
+        if not input_key:
+            continue
+        if _reaches_node(graph, node_id, sampler_id):
+            candidates.append((node_id, input_key))
+    return candidates
+
+
 def inspect_api_workflow(workflow: object, *, path: Path | None = None) -> WorkflowInspection:
     if not isinstance(workflow, dict) or not workflow:
         return WorkflowInspection(
@@ -199,6 +284,23 @@ def inspect_api_workflow(workflow: object, *, path: Path | None = None) -> Workf
             f"Mehrere gleich nahe negative Text-Nodes gefunden: {', '.join(negative_nodes)}; verwendet wird {negative_node}."
         )
 
+    reference_candidates = _reference_loader_candidates(workflow, sampler_id)
+    reference_node = None
+    reference_input_key = None
+    if len(reference_candidates) == 1:
+        reference_node, reference_input_key = reference_candidates[0]
+        warnings.append(
+            f"Referenzbild-Eingang {reference_node}.{reference_input_key} wurde automatisch erkannt."
+        )
+    elif len(reference_candidates) > 1:
+        rendered = ", ".join(
+            f"{node}.{input_key}" for node, input_key in reference_candidates[:8]
+        )
+        warnings.append(
+            "Mehrere mit dem Sampler verbundene Bild-Loader gefunden; "
+            f"keine Referenz automatisch gewählt ({rendered})."
+        )
+
     return WorkflowInspection(
         path=path,
         valid=True,
@@ -207,6 +309,9 @@ def inspect_api_workflow(workflow: object, *, path: Path | None = None) -> Workf
         seed_node=sampler_id,
         seed_input_key=seed_key,
         sampler_node=sampler_id,
+        reference_node=reference_node,
+        reference_input_key=reference_input_key,
+        reference_candidates=tuple(reference_candidates),
         warnings=tuple(warnings),
     )
 
