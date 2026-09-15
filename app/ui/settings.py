@@ -21,6 +21,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.ai.model import OllamaClient
+from app.ai.model_compatibility import (
+    AdultModelCompatibilityReport,
+    AdultModelCompatibilityRepository,
+    run_adult_model_compatibility,
+)
 from app.diagnostics import DiagnosticResult, run_diagnostics
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -63,6 +68,30 @@ class ModelDiscoveryWorker(QThread):
         self.completed.emit(models)
 
 
+class AdultCompatibilityWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._settings = settings.model_copy(deep=True)
+
+    def run(self) -> None:
+        client = OllamaClient(
+            model=self._settings.model_name,
+            base_url=self._settings.model_url,
+            timeout=90.0,
+        )
+        try:
+            report = run_adult_model_compatibility(client)
+        except Exception as exc:  # capability probing must never crash settings UI
+            self.failed.emit(str(exc))
+            return
+        finally:
+            client.close()
+        self.completed.emit(report)
+
+
 class SettingsWidget(QWidget):
     settings_saved = Signal(object)
 
@@ -75,8 +104,10 @@ class SettingsWidget(QWidget):
         super().__init__(parent)
         self.store = store
         self.settings = settings.model_copy(deep=True)
+        self.compatibility_repository = AdultModelCompatibilityRepository(store)
         self._diagnostics_worker: DiagnosticsWorker | None = None
         self._model_discovery_worker: ModelDiscoveryWorker | None = None
+        self._compatibility_worker: AdultCompatibilityWorker | None = None
 
         self.model_name = QComboBox()
         self.model_name.setEditable(True)
@@ -236,10 +267,24 @@ class SettingsWidget(QWidget):
         self.diagnostics_output.setMaximumHeight(150)
         self.diagnostics_output.setPlaceholderText("Lokale Diagnose noch nicht ausgeführt.")
 
+        self.compatibility_status = QLabel()
+        self.compatibility_status.setWordWrap(True)
+        self.compatibility_output = QPlainTextEdit()
+        self.compatibility_output.setReadOnly(True)
+        self.compatibility_output.setMaximumHeight(170)
+        self.compatibility_output.setPlaceholderText(
+            "Noch kein Adult-/Kink-Kompatibilitätstest für dieses Modell ausgeführt."
+        )
+        self.compatibility_button = QPushButton("Adult-/Kink-Modelltest")
+        self.compatibility_button.setToolTip(
+            "Führt ausschließlich lokal kurze, nicht-grafische Erwachsenen-Proben aus und erkennt technische Fehler oder klare Ablehnungen."
+        )
+
         self.test_button = QPushButton("Lokale Verbindungen testen")
         self.save_button = QPushButton("Einstellungen speichern")
         action_row = QHBoxLayout()
         action_row.addWidget(self.test_button)
+        action_row.addWidget(self.compatibility_button)
         action_row.addStretch(1)
         action_row.addWidget(self.save_button)
 
@@ -248,17 +293,24 @@ class SettingsWidget(QWidget):
         layout.addWidget(self.profile_note)
         layout.addWidget(QLabel("Gelernte visuelle Präferenzen"))
         layout.addWidget(self.preference_summary)
+        layout.addWidget(QLabel("Adult-/Kink-Modellkompatibilität"))
+        layout.addWidget(self.compatibility_status)
+        layout.addWidget(self.compatibility_output)
         layout.addWidget(self.status)
         layout.addWidget(self.diagnostics_output)
         layout.addStretch(1)
         layout.addLayout(action_row)
 
         self.model_refresh_button.clicked.connect(self.discover_models)
+        self.model_name.currentTextChanged.connect(self._refresh_compatibility_report)
+        self.model_url.textChanged.connect(self._refresh_compatibility_report)
         workflow_browse.clicked.connect(self._choose_workflow)
         profile_catalog_browse.clicked.connect(self._choose_profile_catalog)
         output_browse.clicked.connect(self._choose_output_dir)
         self.test_button.clicked.connect(self.run_diagnostics)
+        self.compatibility_button.clicked.connect(self.run_model_compatibility)
         self.save_button.clicked.connect(self.save)
+        self._refresh_compatibility_report()
 
     def discover_models(self) -> None:
         if self._model_discovery_worker is not None and self._model_discovery_worker.isRunning():
@@ -288,6 +340,7 @@ class SettingsWidget(QWidget):
         elif models:
             self.model_name.setCurrentIndex(0)
         self.model_name.blockSignals(False)
+        self._refresh_compatibility_report()
         if models:
             self.status.setText(f"{len(models)} lokale(s) Modell(e) gefunden.")
         else:
@@ -369,6 +422,76 @@ class SettingsWidget(QWidget):
         self.preference_summary.setText(
             f"Bevorzugt: {liked}\nEher vermeiden: {disliked}"
         )
+
+    def _refresh_compatibility_report(self) -> None:
+        model = self.model_name.currentText().strip()
+        base_url = self.model_url.text().strip()
+        if not model or not base_url:
+            self.compatibility_status.setText("Kein Modell/Endpoint für den Test ausgewählt.")
+            self.compatibility_output.clear()
+            return
+        report = self.compatibility_repository.report_for(model, base_url)
+        if report is None:
+            self.compatibility_status.setText(
+                f"{model}: noch nicht mit dem lokalen Adult-/Kink-Kompatibilitätstest geprüft."
+            )
+            self.compatibility_output.clear()
+            return
+        self._render_compatibility(report)
+
+    def _render_compatibility(self, report: AdultModelCompatibilityReport) -> None:
+        self.compatibility_status.setText(
+            f"[{report.marker}] {report.model_name}: {report.score}/100 · {report.summary}"
+        )
+        lines = [
+            f"[{probe.status.upper()}] {probe.name}: {probe.detail}"
+            for probe in report.probes
+        ]
+        lines.append("")
+        lines.append(
+            "Hinweis: Der Test ist eine lokale Heuristik mit absichtlich nicht-grafischen Erwachsenen-Proben. "
+            "Er erkennt technische Fehler und klare Ablehnungen, garantiert aber kein bestimmtes Verhalten in jeder Unterhaltung."
+        )
+        self.compatibility_output.setPlainText("\n".join(lines))
+
+    def run_model_compatibility(self) -> None:
+        if self._compatibility_worker is not None and self._compatibility_worker.isRunning():
+            return
+        try:
+            settings = self._settings_from_form()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ungültige Einstellungen", str(exc))
+            return
+
+        self.compatibility_button.setEnabled(False)
+        self.compatibility_output.setPlainText(
+            "Prüfe lokal: technische Inferenz, erotischen nicht-grafischen Ton und "
+            "einvernehmlichen nicht-grafischen Kink-/Power-Play-Ton …"
+        )
+        self.compatibility_status.setText(
+            f"Teste {settings.model_name} ausschließlich über {settings.model_url} …"
+        )
+        worker = AdultCompatibilityWorker(settings, self)
+        worker.completed.connect(self._compatibility_completed)
+        worker.failed.connect(self._compatibility_failed)
+        worker.finished.connect(self._compatibility_finished)
+        self._compatibility_worker = worker
+        worker.start()
+
+    def _compatibility_completed(self, report: AdultModelCompatibilityReport) -> None:
+        self.compatibility_repository.save_report(report)
+        self._render_compatibility(report)
+
+    def _compatibility_failed(self, error: str) -> None:
+        self.compatibility_status.setText("[FEHLER] Adult-/Kink-Modelltest konnte nicht abgeschlossen werden.")
+        self.compatibility_output.setPlainText(error)
+
+    def _compatibility_finished(self) -> None:
+        self.compatibility_button.setEnabled(True)
+        worker = self._compatibility_worker
+        self._compatibility_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def run_diagnostics(self) -> None:
         if self._diagnostics_worker is not None and self._diagnostics_worker.isRunning():
