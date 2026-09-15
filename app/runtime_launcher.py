@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import app.main as desktop_main
 from app.ai.model_catalog import catalog_model
 from app.ai.model_fallback import FallbackOllamaClient
+from app.ai.model_fallback_state import ModelFallbackPolicy, ModelFallbackRepository
 from app.ai.model_compatibility import AdultModelCompatibilityRepository
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
@@ -15,17 +16,18 @@ _ALLOWED_FALLBACK_STATUSES = {"compatible", "limited", "unclear"}
 
 def approved_fallback_models(
     settings: AppSettings,
+    policy: ModelFallbackPolicy,
     repository: AdultModelCompatibilityRepository,
 ) -> tuple[str, ...]:
     """Return configured fallbacks that remain strict-OSS and locally tested."""
 
-    if not settings.model_fallback_enabled:
+    if not policy.enabled:
         return ()
 
     primary = settings.model_name.casefold()
     result: list[str] = []
     seen = {primary}
-    for raw in settings.model_fallbacks:
+    for raw in policy.models:
         name = raw.strip()
         folded = name.casefold()
         if not name or folded in seen:
@@ -40,11 +42,11 @@ def approved_fallback_models(
     return tuple(result)
 
 
-def configured_model_client_class(settings: AppSettings, fallbacks: Sequence[str]):
+def configured_model_client_class(fallbacks: Sequence[str]):
     """Create the concrete client class used by MainWindow._build_services."""
 
     fallback_chain = tuple(fallbacks)
-    if not settings.model_fallback_enabled or not fallback_chain:
+    if not fallback_chain:
         return desktop_main.OllamaClient
 
     class ConfiguredFallbackClient(FallbackOllamaClient):
@@ -60,12 +62,13 @@ def main() -> int:
     store = StateStore(make_session_factory())
     settings = store.load_settings(AppSettings.from_env())
     compatibility_repository = AdultModelCompatibilityRepository(store)
-    fallbacks = approved_fallback_models(settings, compatibility_repository)
+    policy = ModelFallbackRepository(store).load()
+    fallbacks = approved_fallback_models(settings, policy, compatibility_repository)
 
     # app.main imports OllamaClient as a module global. Replacing that global
     # before constructing MainWindow keeps the rest of the application unchanged
     # while making the normal Windows launch path use the configured fallback chain.
-    desktop_main.OllamaClient = configured_model_client_class(settings, fallbacks)
+    desktop_main.OllamaClient = configured_model_client_class(fallbacks)
     return desktop_main.main()
 
 
