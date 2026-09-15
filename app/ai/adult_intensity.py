@@ -37,6 +37,56 @@ KINK_BEHAVIOR = (
     "Use a very unconventional and intense kink-oriented tone around explicitly stated desired themes. Do not invent a new taboo, fetish, permission, or boundary merely because the level is high.",
 )
 
+# Visual direction deliberately stays in a non-graphic adult lane. These are
+# composition/styling cues, not permissions for explicit acts. User-authored
+# creative tags and the current request still outrank these soft cues.
+SEXUALITY_VISUAL_CUES: tuple[tuple[str, ...], ...] = (
+    (),
+    (
+        "playful adult flirtation",
+        "suggestive eye contact",
+        "light teasing body language",
+    ),
+    (
+        "sensual adult atmosphere",
+        "intimate composition",
+        "confident sensual body language",
+    ),
+    (
+        "erotic adult atmosphere",
+        "provocative adult styling",
+        "charged intimate composition",
+    ),
+    (
+        "high-intensity adult erotic atmosphere",
+        "bold provocative adult styling",
+        "commanding intimate presence",
+    ),
+)
+
+KINK_VISUAL_CUES: tuple[tuple[str, ...], ...] = (
+    (),
+    (
+        "subtle experimental adult styling",
+        "controlled power-dynamic undertone",
+    ),
+    (
+        "fetish-inspired adult fashion",
+        "clear power-dynamic staging",
+        "deliberate ritualized posture",
+    ),
+    (
+        "strong fetish-fashion direction",
+        "commanding adult posture",
+        "dark ritualized scene staging",
+    ),
+    (
+        "unconventional fetish-inspired adult styling",
+        "intense power-dynamic visual language",
+        "dark editorial fetish atmosphere",
+    ),
+)
+
 
 class AdultIntensityConfig(BaseModel):
     """User-controlled adult tone for one conversation.
@@ -124,13 +174,38 @@ class AdultIntensityConfig(BaseModel):
             "within the configured maxima, and immediately de-escalate when the user asks for less or to stop."
         )
 
-    def visual_text(self) -> str:
-        """Media-safe summary; image planning remains non-graphic elsewhere."""
+    def visual_style_tags(self) -> list[str]:
+        """Return soft positive and negative tags for the local media pipeline.
 
+        Positive tags express the current adult session level through styling,
+        posture and atmosphere. Hard boundaries use an ``avoid:`` prefix so the
+        media prompt compiler can place them in the negative prompt instead of
+        accidentally treating them as desired visual content.
+        """
+
+        result: list[str] = [
+            *SEXUALITY_VISUAL_CUES[self.sexuality_current],
+            *KINK_VISUAL_CUES[self.kink_current],
+        ]
+        result.extend(f"avoid:{item}" for item in self.boundaries[:16])
+        return result
+
+    def visual_text(self) -> str:
+        """Media-safe summary of the current adult visual direction."""
+
+        cues = [
+            *SEXUALITY_VISUAL_CUES[self.sexuality_current],
+            *KINK_VISUAL_CUES[self.kink_current],
+        ]
+        cue_text = ", ".join(cues) if cues else "no extra erotic or kink styling"
+        boundary_text = ", ".join(self.boundaries) if self.boundaries else "none specified"
         return (
-            f"Adult tone: sexuality {self.sexuality_label}; kink tone {self.kink_label}. "
-            "For visuals, express this only through adult mood, styling, posture, atmosphere, and non-graphic "
-            "fetish-inspired direction; never turn the intensity setting into graphic sexual imagery."
+            f"Adult visual direction: sexuality {self.sexuality_current}/4 ({self.sexuality_label}); "
+            f"kink {self.kink_current}/4 ({self.kink_label}). "
+            f"Soft visual cues: {cue_text}. Hard visual boundaries to avoid: {boundary_text}. "
+            "These levels do not force a medium to be generated. If a visual is useful, express the current "
+            "level through clearly adult mood, fashion/material styling, posture, camera language and atmosphere. "
+            "Do not turn intensity into graphic sexual acts, genital-focused imagery, or explicit nudity."
         )
 
 
