@@ -21,7 +21,7 @@ def present_local_model_error(error: str, model_name: str) -> LocalModelErrorPre
         return LocalModelErrorPresentation(
             title="Lokales Modell antwortet zu langsam",
             status="Modell-Inferenz Timeout — Wiederholen verfügbar",
-            retry_label="↻ Nach Timeout wiederholen",
+            retry_label="↻ Wiederholen nach Timeout",
             detail=clean,
         )
 
@@ -29,7 +29,7 @@ def present_local_model_error(error: str, model_name: str) -> LocalModelErrorPre
         return LocalModelErrorPresentation(
             title="Lokale Modell-Inferenz fehlgeschlagen",
             status="Ollama-Backendfehler — Wiederholen nach Fehlerbehebung verfügbar",
-            retry_label="↻ Fehlgeschlagenen Versuch wiederholen",
+            retry_label="↻ Wiederholen",
             detail=clean,
         )
 
@@ -37,7 +37,7 @@ def present_local_model_error(error: str, model_name: str) -> LocalModelErrorPre
         return LocalModelErrorPresentation(
             title="Ollama nicht erreichbar",
             status="Ollama nicht erreichbar — nach dem Start Wiederholen verwenden",
-            retry_label="↻ Nach Ollama-Start wiederholen",
+            retry_label="↻ Wiederholen nach Ollama-Start",
             detail=clean,
         )
 
@@ -45,14 +45,14 @@ def present_local_model_error(error: str, model_name: str) -> LocalModelErrorPre
         return LocalModelErrorPresentation(
             title="Lokales Modell nicht verfügbar",
             status=f"Modell {model_name} nicht verfügbar — Wiederholen nach Auswahl/Installation",
-            retry_label="↻ Nach Modellwahl wiederholen",
+            retry_label="↻ Wiederholen nach Modellwahl",
             detail=clean,
         )
 
     return LocalModelErrorPresentation(
         title="Lokale Modellantwort fehlgeschlagen",
         status="Lokale Antwort fehlgeschlagen — Wiederholen verfügbar",
-        retry_label="↻ Fehlgeschlagenen Versuch wiederholen",
+        retry_label="↻ Wiederholen",
         detail=(
             clean
             or f"Das lokale Modell {model_name} konnte für diesen Versuch keine Antwort erzeugen."
