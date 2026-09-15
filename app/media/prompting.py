@@ -5,6 +5,31 @@ from collections.abc import Iterable
 from app.ai.persona import PersonaState
 from app.media.planner import MediaIntent
 
+_AVOID_PREFIX = "avoid:"
+
+
+def _split_visual_tags(preference_tags: Iterable[str]) -> tuple[list[str], list[str]]:
+    positive: list[str] = []
+    negative: list[str] = []
+    seen_positive: set[str] = set()
+    seen_negative: set[str] = set()
+    for raw in preference_tags:
+        clean = raw.strip()
+        if not clean:
+            continue
+        if clean.casefold().startswith(_AVOID_PREFIX):
+            value = clean[len(_AVOID_PREFIX) :].strip()
+            key = value.casefold()
+            if value and key not in seen_negative:
+                seen_negative.add(key)
+                negative.append(value)
+            continue
+        key = clean.casefold()
+        if key not in seen_positive:
+            seen_positive.add(key)
+            positive.append(clean)
+    return positive, negative
+
 
 def build_visual_prompt(
     intent: MediaIntent,
@@ -15,9 +40,13 @@ def build_visual_prompt(
 
     The generated prompt is intentionally backend-neutral. ComfyUI workflows can
     decide how to route it into CLIP/T5 encoders, LoRAs, ControlNet, etc.
+
+    ``avoid:<term>`` preference tags are a local convention for explicit user
+    boundaries. They are never emitted into the positive prompt and are appended
+    to the negative prompt instead.
     """
 
-    tags = [tag.strip() for tag in preference_tags if tag.strip()]
+    tags, avoid_tags = _split_visual_tags(preference_tags)
     wardrobe = ", ".join(item.strip() for item in intent.wardrobe if item.strip())
     style = (
         "cinematic adult fetish-inspired portrait, mature adult subject, dramatic lighting, "
@@ -29,7 +58,7 @@ def build_visual_prompt(
         f"teasing energy {persona.teasing.current:.2f}, "
         f"creative styling {persona.creativity.current:.2f}"
     )
-    tag_text = ", ".join(tags[:20]) if tags else "dark elegant styling"
+    tag_text = ", ".join(tags[:24]) if tags else "dark elegant styling"
     continuity = (
         f", consistent character identity {intent.continuity_key}"
         if intent.continuity_key
@@ -53,9 +82,27 @@ def build_visual_prompt(
     # Keep the visual generator in a clearly adult, non-explicit lane and avoid
     # common generation defects. The companion may be provocative without
     # requiring graphic sexual imagery.
-    negative = (
-        "minor, child, teen, young-looking, explicit sex act, graphic nudity, genital focus, "
-        "non-consensual violence, gore, injury, text, watermark, logo, low quality, blurry, "
-        "bad anatomy, malformed hands, extra fingers, duplicate limbs"
-    )
+    negative_parts = [
+        "minor",
+        "child",
+        "teen",
+        "young-looking",
+        "explicit sex act",
+        "graphic nudity",
+        "genital focus",
+        "non-consensual violence",
+        "gore",
+        "injury",
+        "text",
+        "watermark",
+        "logo",
+        "low quality",
+        "blurry",
+        "bad anatomy",
+        "malformed hands",
+        "extra fingers",
+        "duplicate limbs",
+    ]
+    negative_parts.extend(f"user boundary: {item}" for item in avoid_tags[:16])
+    negative = ", ".join(negative_parts)
     return positive, negative
