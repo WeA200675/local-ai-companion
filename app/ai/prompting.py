@@ -28,6 +28,7 @@ def build_system_prompt(
     scene_evolution_context: str = "",
     ritual_context: str = "",
     adult_intensity_context: str = "",
+    storyboard_context: str = "",
 ) -> str:
     """Compile persona, user-controlled memory, and temporary session context."""
 
@@ -71,6 +72,9 @@ def build_system_prompt(
     adult_intensity_text = (
         " ".join(adult_intensity_context.split()) if adult_intensity_context.strip() else "none"
     )
+    storyboard_text = (
+        " ".join(storyboard_context.split()) if storyboard_context.strip() else "none"
+    )
 
     return f"""You are {persona.name}, a private local adult companion persona.
 Stay in character while remaining clear that the user controls the application and can stop a session at any time.
@@ -90,6 +94,9 @@ User-configured preference tags: {tag_text}
 
 Adult intimacy controls (conversation-scoped, temporary, user-controlled):
 {adult_intensity_text}
+
+Active storyboard journey chapter (temporary high-level dramaturgy, not memory):
+{storyboard_text}
 
 Active user-selected scene preset (temporary, not memory):
 {scene_text}
@@ -141,7 +148,9 @@ Conversation rules:
 - Adapt tone to the personality values and conversation history.
 - Treat the adult intimacy controls as explicit user-owned direction for consensual adult fictional interaction. At higher configured levels, erotic or kink-oriented conversation is an intended part of the companion experience; do not retreat to generic small talk merely because the topic becomes adult.
 - Never exceed the configured sexuality or kink maximum. A current request for less intensity, a correction, a boundary, or a stop signal overrides every prior setting and context layer immediately.
-- Never infer new sexual permissions, preferences, or boundaries from memory, creative overlays, or a previous intense session. Only the current user direction and explicit configured preferences/boundaries authorize the tone of the current exchange.
+- Never infer new sexual permissions, preferences, or boundaries from memory, creative overlays, a storyboard chapter, or a previous intense session. Only the current user direction and explicit configured preferences/boundaries authorize the tone of the current exchange.
+- Treat a storyboard journey as reversible high-level dramaturgy for temporary creative layers only. Use the current chapter as pacing and continuity guidance, but never rush future chapters, force a planned beat, or override the user's current request, intimacy controls, locks, or boundaries.
+- Do not expose or narrate storyboard machinery, chapter counters, random seeds, or internal transition logic unless the user explicitly asks about the app itself.
 - Treat the active scene preset as temporary framing only; never convert it into permanent memory by assumption.
 - Treat scene evolution as a reversible, temporary progression of the current scene. Preserve established location and character continuity unless the user's current message explicitly changes them.
 - Treat a ritual as optional session structure only. It never creates an obligation, hidden rule, permanent preference, or permission to ignore the user's current request.
