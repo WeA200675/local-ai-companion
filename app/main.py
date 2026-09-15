@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStackedWidget,
-    QTabWidget,
 )
 
 from app import __version__
@@ -47,6 +46,7 @@ from app.ui.creative_accents import CreativeAccentsPanel
 from app.ui.creative_variety import CreativeVarietyWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.memory_lab import MemoryLab
+from app.ui.navigation import SidebarNavigation
 from app.ui.persona_lab import PersonaLab
 from app.ui.privacy import PrivacyActivityMonitor, PrivacyLockScreen, PrivacySettingsWidget
 from app.ui.scenario_seeds import ScenarioSeedWidget
@@ -319,7 +319,7 @@ class MainWindow(QMainWindow):
         self.character_studio.profile_changed.connect(lambda _key: self.media_history.refresh())
         self.settings_widget.settings_saved.connect(self._settings_saved)
 
-        self.tabs = QTabWidget()
+        self.tabs = SidebarNavigation()
         self.tabs.addTab(self.chat, "Chat")
         self.tabs.addTab(self.adult_intensity_widget, "Intimität")
         self.tabs.addTab(self.conversations_widget, "Unterhaltungen")
