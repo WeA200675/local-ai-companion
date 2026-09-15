@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.ai.model_fallback import FallbackOllamaClient
-from app.ai.model_fallback_state import ModelFallbackPolicy
+from app.ai.model_fallback_state import ModelFallbackPolicy, ModelFallbackRepository
+from app.memory.database import make_session_factory
+from app.memory.store import StateStore
 from app.runtime_launcher import approved_fallback_models, configured_model_client_class
 from app.settings import AppSettings
 
@@ -28,6 +30,20 @@ def test_policy_normalizes_fallback_names() -> None:
         models=" qwen3:8b, QWEN3:8B, dolphin-mistral:7b, ",
     )
     assert policy.models == ["qwen3:8b", "dolphin-mistral:7b"]
+
+
+def test_fallback_policy_survives_unrelated_settings_save(tmp_path) -> None:
+    store = StateStore(make_session_factory(tmp_path / "fallback.sqlite3"))
+    repository = ModelFallbackRepository(store)
+    repository.save(
+        ModelFallbackPolicy(enabled=True, models=["qwen3:8b", "dolphin-mistral:7b"])
+    )
+
+    store.save_settings(AppSettings(chat_temperature=0.42))
+
+    loaded = repository.load()
+    assert loaded.enabled is True
+    assert loaded.models == ["qwen3:8b", "dolphin-mistral:7b"]
 
 
 def test_runtime_accepts_only_catalog_models_with_operational_probe() -> None:
