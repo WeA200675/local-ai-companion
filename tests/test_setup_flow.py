@@ -3,13 +3,21 @@ from __future__ import annotations
 import pytest
 
 from app.diagnostics import DiagnosticResult
+from app.memory.database import make_session_factory
+from app.memory.store import StateStore
 from app.settings import AppSettings
-from app.setup_flow import candidate_settings, core_setup_status, setup_required
+from app.setup_flow import FirstRunSetupRepository, candidate_settings, core_setup_status
 
 
-def test_first_run_is_required_until_completed() -> None:
-    assert setup_required(AppSettings()) is True
-    assert setup_required(AppSettings(setup_completed=True)) is False
+def test_first_run_state_is_required_until_completed(tmp_path) -> None:
+    store = StateStore(make_session_factory(tmp_path / "companion.sqlite3"))
+    repository = FirstRunSetupRepository(store)
+
+    assert repository.required() is True
+    state = repository.mark_completed()
+    assert state.completed is True
+    assert state.revision == 2
+    assert repository.required() is False
 
 
 def test_candidate_settings_preserve_unrelated_local_configuration() -> None:
@@ -21,19 +29,16 @@ def test_candidate_settings_preserve_unrelated_local_configuration() -> None:
         media_workflow="workflow.json",
         continuity_key="olivia-main",
         adaptive_memory_enabled=False,
-        setup_completed=False,
     )
 
     candidate = candidate_settings(
         original,
         model_name="  new-model  ",
         model_url="  http://127.0.0.1:11434/  ",
-        completed=True,
     )
 
     assert candidate.model_name == "new-model"
     assert candidate.model_url == "http://127.0.0.1:11434/"
-    assert candidate.setup_completed is True
     assert candidate.media_enabled is True
     assert candidate.media_workflow == "workflow.json"
     assert candidate.continuity_key == "olivia-main"
