@@ -12,6 +12,7 @@ from app.ai.scene_mixer import ATMOSPHERES, COMPOSITIONS, LIGHTING, SETTINGS
 from app.ai.visual_motifs import default_visual_motifs
 from app.media.comfyui import ComfyUIClient, ComfyUIError, GeneratedMedia
 from app.media.coverage import VisualCoverageRepository
+from app.media.hardware import ComfyUIHardwareProbe, MediaHardwareBudget
 from app.media.planner import MediaIntent, MediaPlanner
 from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
 from app.media.prompting import build_visual_prompt
@@ -20,6 +21,17 @@ from app.memory.store import StateStore
 from app.settings import AppSettings
 
 _IMAGE_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+_MOTION_REQUEST_TOKENS = (
+    "video",
+    "gif",
+    "animation",
+    "animiert",
+    "bewegtes bild",
+    "bewegung",
+    "motion",
+    "loop",
+    "clip",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +64,7 @@ class MediaService:
         self.settings = settings or AppSettings()
         self.planner = MediaPlanner()
         self.render_calculator = MediaRenderCalculator()
+        self.hardware_probe = ComfyUIHardwareProbe(self.settings.media_url)
         self.coverage = VisualCoverageRepository(store) if store is not None else None
         self.workflow_profiles: list[WorkflowProfile] = []
         if self.settings.profile_catalog_path is not None:
@@ -102,6 +115,14 @@ class MediaService:
         if not path.exists() or not path.is_file():
             return None
         return path
+
+    @staticmethod
+    def _explicit_motion_request(user_text: str) -> bool:
+        text = " ".join(user_text.casefold().split())
+        return any(token in text for token in _MOTION_REQUEST_TOKENS)
+
+    def hardware_budget(self) -> MediaHardwareBudget:
+        return self.hardware_probe.current()
 
     def _reference_path(self, continuity_key: str | None) -> Path | None:
         """Prefer a pinned anchor, then fall back to the newest liked local image."""
@@ -213,6 +234,7 @@ class MediaService:
 
         tags = [tag.strip() for tag in preference_tags if tag.strip()]
         liked_cues, disliked_cues = self._visual_cues()
+        hardware = self.hardware_budget()
         coverage_guidance = ""
         if self.coverage is not None:
             coverage_guidance = self.coverage.guidance(self._active_conversation_id())
@@ -225,6 +247,11 @@ class MediaService:
             }
         )
         available_text = ", ".join(available_profile_kinds) if available_profile_kinds else "legacy workflow"
+        motion_rule = (
+            "Motion is locally reasonable for this hardware when it materially improves the moment."
+            if hardware.motion_recommended
+            else "Prefer a still image on this hardware unless the current user explicitly asks for motion."
+        )
         planner_prompt = f"""You are the visual director for a private local adult companion app.
 Return exactly one JSON object matching this schema:
 {{
@@ -246,6 +273,8 @@ Return exactly one JSON object matching this schema:
 
 Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion materially improves the moment.
 Configured local workflow capabilities: {available_text}.
+Local render hardware: {hardware.summary()}.
+{motion_rule}
 When generate is true, make concrete visual-direction choices instead of vague style prose: choose framing, camera angle, lighting, composition, wardrobe/material cues, and a restrained motion cue for GIF/video.
 Keep every depicted person clearly adult. Visuals may be provocative, fetish-inspired, dominant, teasing, sensual, or dark, but do not plan graphic sexual acts, genital-focused imagery, minors, coercive violence, gore, or injury.
 Use historical image feedback and local coverage only as soft visual guidance; the user's current request and explicit creative context take priority.
@@ -258,6 +287,7 @@ Do not include prose outside the JSON object."""
             f"Teasing: {persona.teasing.current:.2f}\n"
             f"Creativity: {persona.creativity.current:.2f}\n"
             f"Visual continuity enabled: {self.settings.continuity_enabled}\n"
+            f"Local hardware budget: {hardware.summary()}\n"
             f"Preference tags: {', '.join(tags[:24]) if tags else 'none'}\n"
             f"Historically liked visual cues: {', '.join(liked_cues) if liked_cues else 'none yet'}\n"
             f"Historically disliked visual cues: {', '.join(disliked_cues) if disliked_cues else 'none yet'}\n"
@@ -274,6 +304,20 @@ Do not include prose outside the JSON object."""
             intent = self.planner.from_model_payload(payload)
             if not self.settings.continuity_enabled and intent.continuity_key:
                 intent = intent.model_copy(update={"continuity_key": None})
+            if (
+                intent.kind != "image"
+                and not hardware.motion_recommended
+                and not self._explicit_motion_request(user_text)
+            ):
+                reason = intent.reason.strip()
+                suffix = f"still selected for local {hardware.tier} hardware budget"
+                intent = intent.model_copy(
+                    update={
+                        "kind": "image",
+                        "motion": "",
+                        "reason": f"{reason}; {suffix}" if reason else suffix,
+                    }
+                )
             return intent
         except (LocalModelError, ValueError):
             return MediaIntent(generate=False, reason="planner failed")
@@ -292,6 +336,7 @@ Do not include prose outside the JSON object."""
             [item for item in preference_tags],
             quality=quality,
             max_megapixels=max_megapixels,
+            hardware_budget=self.hardware_budget(),
         )
 
     def generate_for_exchange(
