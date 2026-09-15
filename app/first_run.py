@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
 from app.settings import AppSettings
-from app.setup_flow import setup_required
+from app.setup_flow import FirstRunSetupRepository
 from app.ui.first_run_setup import FirstRunSetupDialog
 
 
@@ -16,7 +16,8 @@ def run_setup(*, force: bool = False) -> int:
     session_factory = make_session_factory()
     store = StateStore(session_factory)
     settings = store.load_settings(AppSettings.from_env())
-    if not force and not setup_required(settings):
+    setup_repository = FirstRunSetupRepository(store)
+    if not force and not setup_repository.required():
         return 0
 
     app = QApplication.instance()
