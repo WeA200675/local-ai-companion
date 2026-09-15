@@ -19,6 +19,7 @@ from app.ai.creative_recipes import CreativeRecipeManager, CreativeRecipeReposit
 from app.ai.look_presets import LookPresetRepository
 from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
+from app.ai.scenario_seeds import ScenarioSeedEngine, ScenarioSeedRepository
 from app.ai.scene_evolution import RitualRepository, SceneEvolutionRepository
 from app.ai.scene_mixer import SceneMixerRepository
 from app.ai.session_arcs import SessionArcRepository
@@ -46,6 +47,7 @@ from app.ui.memory_lab import MemoryLab
 from app.ui.mode_chat import ModeAwareChatWidget
 from app.ui.persona_lab import PersonaLab
 from app.ui.privacy import PrivacyActivityMonitor, PrivacyLockScreen, PrivacySettingsWidget
+from app.ui.scenario_seeds import ScenarioSeedWidget
 from app.ui.scene_evolution import SceneEvolutionRitualsPanel
 from app.ui.scene_presets import ScenePresetsWidget
 from app.ui.session_modes import SessionModesWidget
@@ -109,6 +111,20 @@ class MainWindow(QMainWindow):
             self.mood_repository,
             self.detail_repository,
         )
+        self.scenario_seed_repository = ScenarioSeedRepository(self.store)
+        self.scenario_seed_engine = ScenarioSeedEngine(
+            self.scenario_seed_repository,
+            self.look_repository,
+            self.variety_repository,
+            self.arc_repository,
+            self.mixer_repository,
+            self.motif_repository,
+            self.mood_repository,
+            self.detail_repository,
+            self.evolution_repository,
+            self.ritual_repository,
+            self.director_repository,
+        )
 
         self.model, self.media_service = self._build_services(self.settings)
         self.session_modes = SessionModesWidget(self.store)
@@ -149,6 +165,8 @@ class MainWindow(QMainWindow):
             scene_evolution=self.evolution_repository.active(active_conversation_id),
             ritual_repository=self.ritual_repository,
             active_ritual=self.ritual_repository.active(active_conversation_id),
+            scenario_seed_repository=self.scenario_seed_repository,
+            scenario_seed=self.scenario_seed_repository.active(active_conversation_id),
             creative_director=self.creative_director,
         )
         self.conversations_widget = ConversationsWidget(
@@ -183,6 +201,12 @@ class MainWindow(QMainWindow):
         self.scene_evolution = SceneEvolutionRitualsPanel(
             self.evolution_repository,
             self.ritual_repository,
+            active_conversation_id,
+            self.chat.store.assistant_message_count,
+        )
+        self.scenario_studio = ScenarioSeedWidget(
+            self.scenario_seed_engine,
+            self.scenario_seed_repository,
             active_conversation_id,
             self.chat.store.assistant_message_count,
         )
@@ -265,6 +289,7 @@ class MainWindow(QMainWindow):
         self.scene_evolution.ritual_changed.connect(
             lambda _ritual: self.context_inspector.refresh()
         )
+        self.scenario_studio.changed.connect(self._scenario_seed_changed)
         self.creative_variety.director_applied.connect(self._creative_director_applied)
         self.creative_variety.recipe_applied.connect(self._creative_director_applied)
         self.chat.creative_context_changed.connect(self._creative_director_auto_changed)
@@ -283,6 +308,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self.chat, "Chat")
         self.tabs.addTab(self.conversations_widget, "Unterhaltungen")
+        self.tabs.addTab(self.scenario_studio, "Session Studio")
         self.tabs.addTab(self.variety_widget, "Impulse")
         self.tabs.addTab(self.creative_variety, "Abwechslung")
         self.tabs.addTab(self.creative_accents, "Mood & Details")
@@ -427,6 +453,16 @@ class MainWindow(QMainWindow):
         old_model.close()
         self.context_inspector.refresh()
 
+    def _scenario_seed_changed(self, selection: object) -> None:
+        conversation_id = self.conversations_repository.active_id()
+        self.chat.refresh_creative_overlays()
+        self.variety_widget.set_conversation(conversation_id)
+        self.creative_variety.refresh_from_repositories()
+        self.creative_accents.refresh_from_repositories()
+        self.scene_evolution.refresh_from_repositories()
+        self.scenario_studio.refresh_from_repository()
+        self.context_inspector.refresh()
+
     def _creative_director_applied(self, _result: object) -> None:
         conversation_id = self.conversations_repository.active_id()
         self.chat.refresh_creative_overlays()
@@ -434,6 +470,7 @@ class MainWindow(QMainWindow):
         self.creative_accents.refresh_from_repositories()
         self.session_moments.refresh_from_repositories()
         self.scene_evolution.refresh_from_repositories()
+        self.scenario_studio.refresh_from_repository()
         self.context_inspector.refresh()
 
     def _creative_director_auto_changed(self) -> None:
@@ -443,6 +480,7 @@ class MainWindow(QMainWindow):
         self.creative_accents.refresh_from_repositories()
         self.session_moments.refresh_from_repositories()
         self.scene_evolution.refresh_from_repositories()
+        self.scenario_studio.refresh_from_repository()
         self.context_inspector.refresh()
 
     def _conversation_changed(self, conversation_id: str) -> None:
@@ -456,6 +494,7 @@ class MainWindow(QMainWindow):
         self.creative_accents.set_conversation(conversation_id)
         self.session_moments.set_conversation(conversation_id)
         self.scene_evolution.set_conversation(conversation_id)
+        self.scenario_studio.set_conversation(conversation_id)
         self.context_inspector.refresh()
 
     def _persona_changed(self, persona: PersonaState) -> None:

@@ -119,6 +119,7 @@ class ContextInspectorWidget(QWidget):
             detail_accent=self.chat.detail_accent,
             session_moment=self.chat.session_moment,
             twist_card=self.chat.twist_card,
+            scenario_seed=self.chat.scenario_seed,
             twist_auto_enabled=twist_auto_enabled,
             twist_interval=twist_interval,
             anti_repetition_context=anti_repetition_context,
@@ -163,10 +164,19 @@ class ContextInspectorWidget(QWidget):
         ritual_auto = "manuell"
         if snapshot.ritual_automatic:
             ritual_auto = f"automatisch · alle {snapshot.ritual_interval} Antworten"
+        scenario = "aus"
+        if snapshot.scenario_seed_name:
+            media = snapshot.scenario_media_preference or "auto"
+            score = snapshot.scenario_compatibility_score
+            seed = snapshot.scenario_random_seed
+            scenario = (
+                f"{snapshot.scenario_seed_name} · Kompatibilität {score}% · Medien {media} · RNG {seed}"
+            )
 
         lines = [
             f"Modell: {snapshot.model_name}",
             f"Unterhaltung: {snapshot.conversation_title or 'Legacy/Hauptchat'}",
+            f"Session Studio: {scenario}",
             f"Kontextfenster: {context_window}",
             f"Antwortbudget: {response_budget}",
             f"Geschätzter Input: ~{snapshot.approx_input_tokens} Token",

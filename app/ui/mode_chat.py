@@ -12,6 +12,7 @@ from app.ai.creative_accents import (
 from app.ai.creative_director import CreativeDirector
 from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.prompting import build_system_prompt
+from app.ai.scenario_seeds import ScenarioSeedRepository, ScenarioSeedSelection
 from app.ai.scene_evolution import (
     ActiveRitual,
     ActiveSceneEvolution,
@@ -65,6 +66,8 @@ class ModeAwareChatWidget(ChatWidget):
         scene_evolution: ActiveSceneEvolution | None = None,
         ritual_repository: RitualRepository | None = None,
         active_ritual: ActiveRitual | None = None,
+        scenario_seed_repository: ScenarioSeedRepository | None = None,
+        scenario_seed: ScenarioSeedSelection | None = None,
         creative_director: CreativeDirector | None = None,
         **kwargs,
     ) -> None:
@@ -94,6 +97,8 @@ class ModeAwareChatWidget(ChatWidget):
         self.scene_evolution = scene_evolution
         self.ritual_repository = ritual_repository
         self.active_ritual = active_ritual
+        self.scenario_seed_repository = scenario_seed_repository
+        self.scenario_seed = scenario_seed
         self.creative_director = creative_director
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
@@ -191,6 +196,15 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Ritual: {active.ritual_name} · {active.step_name}")
 
+    def set_scenario_seed(self, seed: ScenarioSeedSelection | None) -> None:
+        self.scenario_seed = seed.model_copy(deep=True) if seed is not None else None
+        if seed is None:
+            self.status.setText("Session Studio: kein Seed aktiv")
+        else:
+            self.status.setText(
+                f"Session Studio: {seed.template_name} · Kompatibilität {seed.compatibility_score}%"
+            )
+
     def refresh_creative_overlays(self) -> None:
         if self.conversations is None:
             return
@@ -217,6 +231,8 @@ class ModeAwareChatWidget(ChatWidget):
             self.scene_evolution = self.evolution_repository.active(conversation_id)
         if self.ritual_repository is not None:
             self.active_ritual = self.ritual_repository.active(conversation_id)
+        if self.scenario_seed_repository is not None:
+            self.scenario_seed = self.scenario_seed_repository.active(conversation_id)
 
     def set_conversation(self, conversation_id: str) -> None:
         if self.conversations is None:
@@ -364,6 +380,7 @@ class ModeAwareChatWidget(ChatWidget):
                 if self.active_ritual is not None
                 else "ritual:none"
             ),
+            f"scenario:{self.scenario_seed.template_id if self.scenario_seed else 'none'}",
         ]
         return "|".join(parts)
 
@@ -488,6 +505,17 @@ class ModeAwareChatWidget(ChatWidget):
             return
 
         planner_parts = [user_text]
+        if self.scenario_seed is not None and self.scenario_seed.media_preference != "auto":
+            if self.scenario_seed.media_preference == "motion":
+                planner_parts.append(
+                    "Session Studio media preference: prefer a GIF or video only when a configured local "
+                    "motion workflow supports it and motion genuinely improves this exchange; otherwise use image."
+                )
+            else:
+                planner_parts.append(
+                    "Session Studio media preference: prefer a still image for this session unless the current "
+                    "user request clearly calls for motion."
+                )
         scene_context = self._scene_context()
         if scene_context:
             planner_parts.append(f"Active user-selected scene: {scene_context}")
