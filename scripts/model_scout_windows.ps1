@@ -9,4 +9,8 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Set-Location $repoRoot
-& $venvPython -m app.model_scout @args
+if ($args.Count -eq 0) {
+    & $venvPython -m app.model_catalog_gui
+} else {
+    & $venvPython -m app.model_scout @args
+}
