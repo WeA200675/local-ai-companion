@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.ai.model import OllamaClient
 from app.ai.model_catalog import CatalogModel, pull_catalog_model, strict_open_source_models
+from app.ai.model_fallback_state import ModelFallbackPolicy, ModelFallbackRepository
 from app.ai.model_compatibility import (
     AdultModelCompatibilityReport,
     AdultModelCompatibilityRepository,
@@ -98,6 +99,8 @@ class ModelCatalogWindow(QWidget):
         self.store = StateStore(make_session_factory())
         self.settings = self.store.load_settings(AppSettings.from_env())
         self.compatibility_repository = AdultModelCompatibilityRepository(self.store)
+        self.fallback_repository = ModelFallbackRepository(self.store)
+        self.fallback_policy = self.fallback_repository.load()
         self.catalog = strict_open_source_models()
         self.installed: set[str] = set()
 
@@ -191,11 +194,11 @@ class ModelCatalogWindow(QWidget):
         return self.catalog[row]
 
     def _fallback_names(self) -> list[str]:
-        return list(self.settings.model_fallbacks)
+        return list(self.fallback_policy.models)
 
     def _is_configured_fallback(self, model_name: str) -> bool:
         folded = model_name.casefold()
-        return any(name.casefold() == folded for name in self.settings.model_fallbacks)
+        return any(name.casefold() == folded for name in self.fallback_policy.models)
 
     def _report_for(self, model_name: str) -> AdultModelCompatibilityReport | None:
         return self.compatibility_repository.report_for(model_name, self.settings.model_url)
@@ -212,9 +215,14 @@ class ModelCatalogWindow(QWidget):
             and report.status in _FALLBACK_ALLOWED_STATUSES
         )
 
+    def _save_fallback_policy(self, models: list[str]) -> None:
+        self.fallback_policy = self.fallback_repository.save(
+            ModelFallbackPolicy(enabled=bool(models), models=models)
+        )
+
     def _refresh_fallback_summary(self) -> None:
         fallbacks = self._fallback_names()
-        if not self.settings.model_fallback_enabled or not fallbacks:
+        if not self.fallback_policy.enabled or not fallbacks:
             self.fallback_summary.setText("Automatische Modell-Rückfallebene: aus")
             return
         self.fallback_summary.setText(
@@ -346,17 +354,17 @@ class ModelCatalogWindow(QWidget):
         model = self._selected_model()
         if model is None or model.ollama_model.casefold() not in self.installed:
             return
+
         remaining_fallbacks = [
             name
-            for name in self.settings.model_fallbacks
+            for name in self.fallback_policy.models
             if name.casefold() != model.ollama_model.casefold()
         ]
+        if len(remaining_fallbacks) != len(self.fallback_policy.models):
+            self._save_fallback_policy(remaining_fallbacks)
+
         updated = self.settings.model_copy(
-            update={
-                "model_name": model.ollama_model,
-                "model_fallbacks": remaining_fallbacks,
-                "model_fallback_enabled": bool(remaining_fallbacks),
-            },
+            update={"model_name": model.ollama_model},
             deep=True,
         )
         self.store.save_settings(updated)
@@ -388,15 +396,7 @@ class ModelCatalogWindow(QWidget):
             updated_fallbacks = [*current, model.ollama_model]
             action = "hinzugefügt"
 
-        updated = self.settings.model_copy(
-            update={
-                "model_fallbacks": updated_fallbacks,
-                "model_fallback_enabled": bool(updated_fallbacks),
-            },
-            deep=True,
-        )
-        self.store.save_settings(updated)
-        self.settings = updated
+        self._save_fallback_policy(updated_fallbacks)
         self._render_table()
         self._selection_changed()
         self.status.setText(
