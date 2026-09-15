@@ -7,10 +7,27 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 MediaKind = Literal["image", "gif", "video"]
+RenderQuality = Literal["draft", "balanced", "high"]
+_RENDER_KEYS = {"width", "height", "steps", "cfg", "denoise", "frames", "fps"}
+
+
+class WorkflowInputBinding(BaseModel):
+    """Explicit mapping from a calculated render value to one ComfyUI input."""
+
+    node: str
+    input_key: str
+
+    @field_validator("node", "input_key", mode="before")
+    @classmethod
+    def _clean(cls, value: object) -> str:
+        clean = str(value or "").strip()
+        if not clean:
+            raise ValueError("binding values must not be blank")
+        return clean
 
 
 class WorkflowProfile(BaseModel):
-    """One user-owned ComfyUI workflow plus routing metadata."""
+    """One user-owned ComfyUI workflow plus routing and render metadata."""
 
     id: str = Field(min_length=1, max_length=80)
     label: str = Field(default="", max_length=120)
@@ -24,6 +41,12 @@ class WorkflowProfile(BaseModel):
     prefer_for_character: bool = False
     priority: int = Field(default=0, ge=-100, le=100)
     enabled: bool = True
+
+    # Optional local render policy. Old catalogs remain valid; when no explicit
+    # bindings are supplied ComfyUIClient attempts safe common-input detection.
+    render_quality: RenderQuality = "balanced"
+    max_megapixels: float | None = Field(default=None, ge=0.20, le=8.0)
+    render_bindings: dict[str, WorkflowInputBinding] = Field(default_factory=dict)
 
     @field_validator(
         "id",
@@ -44,6 +67,16 @@ class WorkflowProfile(BaseModel):
     @classmethod
     def _unique_kinds(cls, value: list[MediaKind]) -> list[MediaKind]:
         return list(dict.fromkeys(value or ["image"]))
+
+    @field_validator("render_bindings")
+    @classmethod
+    def _valid_render_bindings(
+        cls, value: dict[str, WorkflowInputBinding]
+    ) -> dict[str, WorkflowInputBinding]:
+        unsupported = sorted(set(value) - _RENDER_KEYS)
+        if unsupported:
+            raise ValueError(f"unsupported render binding(s): {', '.join(unsupported)}")
+        return value
 
     @property
     def workflow_path(self) -> Path:

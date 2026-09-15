@@ -36,10 +36,18 @@ def build_visual_prompt(
         else ""
     )
     wardrobe_text = f", wardrobe: {wardrobe}" if wardrobe else ""
+    motion_text = f", motion direction: {intent.motion}" if intent.motion else ""
+    direction = (
+        f"framing: {intent.framing or 'portrait'}, "
+        f"camera angle: {intent.camera_angle or 'eye level'}, "
+        f"lighting direction: {intent.lighting or 'cinematic'}, "
+        f"composition: {intent.composition or 'balanced composition'}"
+    )
     positive = (
         f"{style}, visual style: {intent.visual_style or 'cinematic'}, mood: {intent.mood}, "
         f"theme: {intent.theme or 'private adult scene'}, intensity {intent.intensity:.2f}, "
-        f"{personality}, user style preferences: {tag_text}{wardrobe_text}{continuity}"
+        f"{direction}, {personality}, user style preferences: {tag_text}"
+        f"{wardrobe_text}{motion_text}{continuity}"
     )
 
     # Keep the visual generator in a clearly adult, non-explicit lane and avoid
