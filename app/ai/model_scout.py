@@ -32,7 +32,7 @@ class ModelScoutReport:
     @property
     def summary(self) -> str:
         if not self.reports:
-            return "Ollama meldet keine installierten Modelle."
+            return "Ollama meldet keine passenden installierten Modelle."
         if self.recommended_model:
             return (
                 f"{len(self.reports)} lokale(s) Modell(e) geprüft, "
@@ -112,12 +112,14 @@ def scout_installed_models(
     *,
     client_factory: ClientFactory | None = None,
     max_models: int = 0,
+    allowed_models: set[str] | None = None,
 ) -> ModelScoutReport:
-    """Compare already-installed Ollama models using the existing local adult probe.
+    """Compare installed Ollama models using the existing local adult probe.
 
-    No model is downloaded or switched automatically. The scout performs the same
-    technical + non-graphic Adult-/Kink capability checks already exposed in the
-    app and only recommends among models that completed technical inference.
+    No model is downloaded or switched automatically. If ``allowed_models`` is
+    supplied, only those already-installed model names participate in the scout;
+    this lets the strict Open-Source catalog prevent custom-license models from
+    becoming recommendations without changing the reusable scout default.
     """
 
     clean_url = base_url.strip().rstrip("/")
@@ -134,6 +136,9 @@ def scout_installed_models(
         discovery.close()
 
     unique_models = sorted({item.strip() for item in models if item.strip()}, key=str.casefold)
+    if allowed_models is not None:
+        allowed = {name.strip().casefold() for name in allowed_models if name.strip()}
+        unique_models = [name for name in unique_models if name.casefold() in allowed]
     if max_models > 0:
         unique_models = unique_models[:max_models]
 
