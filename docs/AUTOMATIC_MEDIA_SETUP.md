@@ -12,11 +12,28 @@ Given an exported ComfyUI workflow in **API JSON** format, the helper:
 4. infers common output kinds such as image, GIF, or video when the workflow exposes recognizable output nodes;
 5. records the render controls that can safely be changed (`width`, `height`, `steps`, `cfg`, `denoise`, `frames`, `fps`);
 6. creates or merges an app-owned workflow profile catalog;
-7. optionally runs a real local ComfyUI smoke render and downloads the result into the configured local output folder.
+7. optionally runs a real local ComfyUI smoke render and downloads the result into the configured local output folder;
+8. can persist the detected media configuration directly into the same local SQLite settings used by the desktop app.
 
 The helper does not install ComfyUI, models, LoRAs, custom nodes, or proprietary SDKs. It does not contact a cloud service.
 
-## One-command setup
+## Windows one-click wizard
+
+After the normal Windows environment setup, double-click:
+
+```text
+media_setup_windows.cmd
+```
+
+The wizard lets you select the exported API workflow and output folder, shows the detected node mapping and workflow capabilities, then offers one explicit action:
+
+**Automatisch einrichten, testen & speichern**
+
+With the default render verification enabled, the wizard creates/merges the generated workflow profile, sends a deliberately small diagnostic workflow to the configured local ComfyUI instance, waits for the History result, downloads the generated file locally, shows it in the wizard, and only then saves the media settings to the app database.
+
+If the real render test fails, existing app settings are left unchanged. The generated profile file may already exist, but it is not activated in the app until a successful setup is saved. The render test can be intentionally disabled when only static workflow inspection is desired.
+
+## Command-line setup
 
 From the repository root:
 
@@ -39,7 +56,7 @@ The smoke test uses a deliberately simple, non-personal studio still-life prompt
 
 ## Result
 
-A successful run prints the detected node mapping, media kinds, render controls, generated catalog path, local hardware tier, and the path of the downloaded smoke-test result.
+A successful run or wizard session identifies the detected node mapping, media kinds, render controls, generated catalog path, local hardware tier, and the path of the downloaded smoke-test result.
 
 The resulting catalog can be used through either the app setting `Workflow-Profile` or the environment variable:
 
@@ -47,7 +64,7 @@ The resulting catalog can be used through either the app setting `Workflow-Profi
 LOCAL_MEDIA_PROFILE_CATALOG=data/workflow_profiles.generated.json
 ```
 
-Set `LOCAL_MEDIA_ENABLED=1` when using environment configuration.
+Set `LOCAL_MEDIA_ENABLED=1` when using environment configuration. The wizard performs the equivalent local app-settings update automatically after a successful run.
 
 ## Limits
 

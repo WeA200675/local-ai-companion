@@ -164,6 +164,28 @@ def save_generated_profile(
     return target
 
 
+def settings_with_auto_setup(
+    settings: AppSettings,
+    setup: WorkflowAutoSetup,
+    catalog_path: str | Path,
+) -> AppSettings:
+    """Return settings with only the local media fields updated by the wizard."""
+
+    if not setup.ready or setup.profile is None:
+        raise MediaSetupError("Workflow is not ready to be applied to app settings")
+    catalog = str(Path(catalog_path).expanduser())
+    return settings.model_copy(
+        update={
+            "media_enabled": True,
+            "media_workflow": str(setup.workflow),
+            "media_profile_catalog": catalog,
+            "media_positive_node": setup.profile.positive_node,
+            "media_negative_node": setup.profile.negative_node,
+            "media_seed_node": setup.profile.seed_node,
+        }
+    )
+
+
 def _smoke_intent(kind: str) -> MediaIntent:
     motion = "slow subtle camera drift" if kind != "image" else ""
     return MediaIntent(
