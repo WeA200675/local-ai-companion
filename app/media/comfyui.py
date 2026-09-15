@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from app.media.profiles import WorkflowProfile
+from app.media.rendering import MediaRenderPlan
 
 
 class ComfyUIError(RuntimeError):
@@ -23,6 +24,7 @@ class GeneratedMedia:
     kind: str
     prompt_id: str
     seed: int
+    applied_render_parameters: tuple[str, ...] = ()
 
 
 class ComfyUIClient:
@@ -32,6 +34,14 @@ class ComfyUIClient:
     a WorkflowProfile per generation so different local pipelines can share one
     ComfyUI endpoint and output directory.
     """
+
+    _AUTO_INPUT_KEYS = {
+        "steps": ("steps",),
+        "cfg": ("cfg", "guidance"),
+        "denoise": ("denoise",),
+        "frames": ("length", "frames", "frame_count", "num_frames"),
+        "fps": ("fps", "frame_rate"),
+    }
 
     def __init__(
         self,
@@ -138,6 +148,161 @@ class ComfyUIClient:
             )
         inputs[input_key] = image_name
 
+    @staticmethod
+    def _is_literal_number(value: object) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    @classmethod
+    def _set_numeric_binding(
+        cls,
+        workflow: dict[str, Any],
+        node_id: str,
+        input_key: str,
+        value: int | float,
+        *,
+        strict: bool,
+    ) -> bool:
+        node = workflow.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if not isinstance(inputs, dict) or input_key not in inputs:
+            if strict:
+                raise ComfyUIError(
+                    f"Render binding {node_id!r}.{input_key!r} is missing from workflow"
+                )
+            return False
+        current = inputs[input_key]
+        if not cls._is_literal_number(current):
+            if strict:
+                raise ComfyUIError(
+                    f"Render binding {node_id!r}.{input_key!r} is not a literal numeric input"
+                )
+            return False
+        inputs[input_key] = value
+        return True
+
+    @staticmethod
+    def _render_values(plan: MediaRenderPlan) -> dict[str, int | float]:
+        return {
+            "width": plan.width,
+            "height": plan.height,
+            "steps": plan.steps,
+            "cfg": plan.cfg,
+            "denoise": plan.denoise,
+            "frames": plan.frames,
+            "fps": plan.fps,
+        }
+
+    @classmethod
+    def _auto_dimension_node(cls, workflow: dict[str, Any]) -> str | None:
+        candidates: list[tuple[int, str]] = []
+        for node_id, node in workflow.items():
+            if not isinstance(node_id, str) or not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            if not (
+                "width" in inputs
+                and "height" in inputs
+                and cls._is_literal_number(inputs["width"])
+                and cls._is_literal_number(inputs["height"])
+            ):
+                continue
+            class_type = str(node.get("class_type") or "").casefold()
+            preferred = int(any(token in class_type for token in ("latent", "empty", "video")))
+            candidates.append((preferred, node_id))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return candidates[0][1]
+
+    @classmethod
+    def _auto_scalar_binding(
+        cls,
+        workflow: dict[str, Any],
+        parameter: str,
+        *,
+        preferred_node: str = "",
+    ) -> tuple[str, str] | None:
+        keys = cls._AUTO_INPUT_KEYS.get(parameter, ())
+        node_order: list[str] = []
+        if preferred_node:
+            node_order.append(preferred_node)
+        node_order.extend(
+            node_id
+            for node_id in sorted(workflow)
+            if isinstance(node_id, str) and node_id not in node_order
+        )
+        for node_id in node_order:
+            node = workflow.get(node_id)
+            inputs = node.get("inputs") if isinstance(node, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            for key in keys:
+                if key in inputs and cls._is_literal_number(inputs[key]):
+                    return node_id, key
+        return None
+
+    @classmethod
+    def _apply_render_plan(
+        cls,
+        workflow: dict[str, Any],
+        plan: MediaRenderPlan,
+        *,
+        profile: WorkflowProfile | None,
+        seed_node: str,
+    ) -> list[str]:
+        values = cls._render_values(plan)
+        applied: list[str] = []
+        explicit = profile.render_bindings if profile is not None else {}
+
+        for parameter, binding in explicit.items():
+            if parameter not in values:
+                continue
+            if cls._set_numeric_binding(
+                workflow,
+                binding.node,
+                binding.input_key,
+                values[parameter],
+                strict=True,
+            ):
+                applied.append(parameter)
+
+        dimension_node = cls._auto_dimension_node(workflow)
+        for parameter in ("width", "height"):
+            if parameter in applied or dimension_node is None:
+                continue
+            if cls._set_numeric_binding(
+                workflow,
+                dimension_node,
+                parameter,
+                values[parameter],
+                strict=False,
+            ):
+                applied.append(parameter)
+
+        for parameter in ("steps", "cfg", "denoise", "frames", "fps"):
+            if parameter in applied:
+                continue
+            preferred = seed_node if parameter in {"steps", "cfg", "denoise"} else ""
+            binding = cls._auto_scalar_binding(
+                workflow,
+                parameter,
+                preferred_node=preferred,
+            )
+            if binding is None:
+                continue
+            node_id, input_key = binding
+            if cls._set_numeric_binding(
+                workflow,
+                node_id,
+                input_key,
+                values[parameter],
+                strict=False,
+            ):
+                applied.append(parameter)
+        return applied
+
     def _nodes_for_profile(
         self, profile: WorkflowProfile | None
     ) -> tuple[str, str, str, str, str]:
@@ -165,6 +330,8 @@ class ComfyUIClient:
         seed: int,
         reference_name: str | None = None,
         profile: WorkflowProfile | None = None,
+        render_plan: MediaRenderPlan | None = None,
+        render_trace: list[str] | None = None,
     ) -> dict[str, Any]:
         workflow = self._load_workflow(profile)
         positive_node, negative_node, seed_node, reference_node, reference_input = (
@@ -177,6 +344,15 @@ class ComfyUIClient:
             if not reference_node or not reference_input:
                 raise ComfyUIError("Reference image supplied but no reference node is configured")
             self._set_reference(workflow, reference_node, reference_input, reference_name)
+        if render_plan is not None:
+            applied = self._apply_render_plan(
+                workflow,
+                render_plan,
+                profile=profile,
+                seed_node=seed_node,
+            )
+            if render_trace is not None:
+                render_trace.extend(applied)
         return workflow
 
     def _upload_reference(self, path: Path) -> str:
@@ -212,6 +388,7 @@ class ComfyUIClient:
         seed: int | None = None,
         reference_path: str | Path | None = None,
         profile: WorkflowProfile | None = None,
+        render_plan: MediaRenderPlan | None = None,
     ) -> GeneratedMedia:
         if profile is not None:
             if not self.can_run_profile(profile):
@@ -230,12 +407,15 @@ class ComfyUIClient:
                 raise ComfyUIError("Reference continuity is enabled but no workflow node is configured")
             reference_name = self._upload_reference(Path(reference_path))
 
+        applied_render_parameters: list[str] = []
         workflow = self.build_workflow(
             positive,
             negative,
             seed=actual_seed,
             reference_name=reference_name,
             profile=profile,
+            render_plan=render_plan,
+            render_trace=applied_render_parameters,
         )
 
         try:
@@ -268,6 +448,7 @@ class ComfyUIClient:
                         kind=path.suffix.lower().lstrip(".") or "image",
                         prompt_id=prompt_id,
                         seed=actual_seed,
+                        applied_render_parameters=tuple(applied_render_parameters),
                     )
             time.sleep(self.poll_interval)
 
