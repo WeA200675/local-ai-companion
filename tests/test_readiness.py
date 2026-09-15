@@ -19,9 +19,16 @@ def _compatibility(status: str = "compatible", score: int = 100) -> AdultModelCo
     )
 
 
-def _diagnostics(*, model: bool = True, comfy: bool = True, workflow: bool = True) -> list[DiagnosticResult]:
+def _diagnostics(
+    *,
+    model: bool = True,
+    inference: bool = True,
+    comfy: bool = True,
+    workflow: bool = True,
+) -> list[DiagnosticResult]:
     return [
         DiagnosticResult("Sprachmodell", model, "model detail"),
+        DiagnosticResult("Modell-Inferenz", inference, "inference detail"),
         DiagnosticResult("ComfyUI-Workflow", workflow, "workflow detail"),
         DiagnosticResult("ComfyUI", comfy, "comfy detail"),
         DiagnosticResult("Medien-Ausgabe", True, "output detail"),
@@ -95,10 +102,44 @@ def test_blocked_adult_model_prevents_core_ready() -> None:
     assert "Adult-/Kink-Modus" in report.summary
 
 
+def test_failed_inference_blocks_model_even_when_inventory_is_available() -> None:
+    settings = AppSettings(media_enabled=False, model_name="qwen2.5:7b")
+
+    report = build_readiness_report(
+        settings,
+        _diagnostics(model=True, inference=False),
+        _compatibility(),
+    )
+
+    model = next(item for item in report.items if item.key == "model")
+    assert report.core_ready is False
+    assert model.state == "blocked"
+    assert "inference detail" in model.detail
+    assert "ollama run qwen2.5:7b" in model.next_step
+
+
+def test_missing_inference_result_is_attention_not_ready() -> None:
+    settings = AppSettings(media_enabled=False)
+    diagnostics = [
+        DiagnosticResult("Sprachmodell", True, "model detail"),
+        DiagnosticResult("ComfyUI-Workflow", True, "workflow detail"),
+        DiagnosticResult("ComfyUI", True, "comfy detail"),
+        DiagnosticResult("Medien-Ausgabe", True, "output detail"),
+    ]
+
+    report = build_readiness_report(settings, diagnostics, _compatibility())
+
+    model = next(item for item in report.items if item.key == "model")
+    assert report.core_ready is False
+    assert model.state == "attention"
+    assert "Mini-Inferenz" in model.detail
+
+
 def test_workflow_profile_diagnostic_counts_as_media_workflow() -> None:
     settings = AppSettings(media_enabled=True, media_profile_catalog="profiles.json")
     diagnostics = [
         DiagnosticResult("Sprachmodell", True, "model detail"),
+        DiagnosticResult("Modell-Inferenz", True, "inference detail"),
         DiagnosticResult("Workflow-Profile", True, "profiles ready"),
         DiagnosticResult("ComfyUI", True, "comfy detail"),
         DiagnosticResult("Medien-Ausgabe", True, "output detail"),
