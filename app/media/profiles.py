@@ -118,8 +118,14 @@ def choose_workflow_profile(
     kind: str,
     character_focus: bool,
     reference_available: bool,
+    reference_supported_ids: set[str] | None = None,
 ) -> WorkflowProfile | None:
-    """Deterministically route a media intent to the best enabled local workflow."""
+    """Deterministically route a media intent to the best enabled local workflow.
+
+    ``reference_supported_ids`` is optional for backward compatibility. When
+    supplied, a profile only receives the reference-image routing bonus if its
+    actual workflow mapping has been validated by the capability inspector.
+    """
 
     candidates: list[tuple[int, str, WorkflowProfile]] = []
     for profile in profiles:
@@ -133,7 +139,12 @@ def choose_workflow_profile(
             score += 40 if profile.prefer_for_character else 0
         elif profile.prefer_for_character:
             score -= 15
-        if reference_available and profile.reference_configured:
+        reference_supported = (
+            profile.reference_configured
+            if reference_supported_ids is None
+            else profile.id in reference_supported_ids
+        )
+        if reference_available and reference_supported:
             score += 20
         candidates.append((score, profile.id, profile))
 
