@@ -45,6 +45,8 @@ class AdultModeAwareChatWidget(ModeAwareChatWidget):
         self.refresh_adult_intensity()
 
     def send_current(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
         if self.adult_intensity_repository is not None and self.conversations is not None:
             text = self.input.toPlainText().strip()
             if text:
