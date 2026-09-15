@@ -90,6 +90,17 @@ def _checkpoint_name(path: Path) -> str:
     return ""
 
 
+def _reference_profile_fields(inspection: WorkflowInspection) -> dict[str, object]:
+    if not inspection.reference_detected:
+        return {}
+    return {
+        "reference_node": inspection.reference_node or "",
+        "reference_input_key": inspection.reference_input_key or "image",
+        "prefer_for_character": True,
+        "routing_tags": ["character"],
+    }
+
+
 def _infer_kinds(
     workflow: Path,
     inspection: WorkflowInspection,
@@ -104,6 +115,7 @@ def _infer_kinds(
         positive_node=inspection.positive_node or "",
         negative_node=inspection.negative_node or "",
         seed_node=inspection.seed_node or "",
+        **_reference_profile_fields(inspection),
     )
     capability = inspect_workflow_profile(probe)
     if capability.output_evidence:
@@ -152,6 +164,7 @@ def inspect_for_auto_setup(
         priority=50,
         enabled=True,
         render_quality="balanced",
+        **_reference_profile_fields(inspection),
     )
     capability = inspect_workflow_profile(profile)
     warnings.extend(capability.warnings)

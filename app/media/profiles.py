@@ -112,6 +112,33 @@ class WorkflowProfile(BaseModel):
             path = (base_dir / path).resolve()
         return self.model_copy(update={"workflow": str(path)})
 
+    def with_detected_reference_mapping(self) -> "WorkflowProfile":
+        """Return an ephemeral runtime profile with a safe detected image loader.
+
+        Explicit catalog mappings always win. Detection is deliberately limited
+        to one filename-style LoadImage/ImageLoader node that is connected to the
+        selected sampler; ambiguous workflows remain untouched.
+        """
+
+        if self.reference_configured or not self.workflow_path.exists():
+            return self
+        from app.media.workflow_inspector import inspect_workflow_file
+
+        inspection = inspect_workflow_file(self.workflow_path)
+        if not inspection.reference_detected:
+            return self
+        routing_tags = list(self.routing_tags)
+        if "character" not in routing_tags:
+            routing_tags.append("character")
+        return self.model_copy(
+            update={
+                "reference_node": inspection.reference_node or "",
+                "reference_input_key": inspection.reference_input_key or "image",
+                "prefer_for_character": True,
+                "routing_tags": routing_tags,
+            }
+        )
+
 
 class WorkflowCatalog(BaseModel):
     version: int = Field(default=1, ge=1, le=100)
@@ -119,7 +146,12 @@ class WorkflowCatalog(BaseModel):
 
 
 def load_workflow_catalog(path: str | Path | None) -> WorkflowCatalog:
-    """Load a local workflow catalog. Relative workflow paths are catalog-relative."""
+    """Load a local workflow catalog. Relative workflow paths are catalog-relative.
+
+    A single safe connected LoadImage-style input may be added ephemerally to a
+    loaded profile when the catalog did not configure a reference mapping. This
+    does not rewrite the user's catalog file and never overrides explicit fields.
+    """
 
     if not path:
         return WorkflowCatalog()
@@ -128,7 +160,10 @@ def load_workflow_catalog(path: str | Path | None) -> WorkflowCatalog:
     if isinstance(payload, list):
         payload = {"version": 1, "profiles": payload}
     catalog = WorkflowCatalog.model_validate(payload)
-    resolved = [profile.resolve_relative_to(catalog_path.parent) for profile in catalog.profiles]
+    resolved = [
+        profile.resolve_relative_to(catalog_path.parent).with_detected_reference_mapping()
+        for profile in catalog.profiles
+    ]
     return catalog.model_copy(update={"profiles": resolved})
 
 
