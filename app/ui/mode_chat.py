@@ -16,10 +16,12 @@ from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.scene_presets import ScenePreset
 from app.ai.session_arcs import ActiveArc, SessionArcRepository
 from app.ai.session_modes import SessionMode
+from app.ai.twist_deck import TwistCard, TwistDeckRepository
 from app.ai.variety import VarietyCard, VarietyRepository
 from app.ai.visual_motifs import VisualMotif, VisualMotifRepository
 from app.memory.conversations import ConversationRepository
 from app.memory.core_memory import CoreMemoryRepository
+from app.memory.session_moments import SessionMoment, SessionMomentRepository
 from app.ui.chat import ChatWidget, MediaWorker
 
 
@@ -49,6 +51,10 @@ class ModeAwareChatWidget(ChatWidget):
         detail_repository: DetailAccentRepository | None = None,
         detail_accent: DetailAccent | None = None,
         anti_repetition_repository: AntiRepetitionRepository | None = None,
+        moment_repository: SessionMomentRepository | None = None,
+        session_moment: SessionMoment | None = None,
+        twist_repository: TwistDeckRepository | None = None,
+        twist_card: TwistCard | None = None,
         creative_director: CreativeDirector | None = None,
         **kwargs,
     ) -> None:
@@ -70,6 +76,10 @@ class ModeAwareChatWidget(ChatWidget):
         self.detail_repository = detail_repository
         self.detail_accent = detail_accent
         self.anti_repetition_repository = anti_repetition_repository
+        self.moment_repository = moment_repository
+        self.session_moment = session_moment
+        self.twist_repository = twist_repository
+        self.twist_card = twist_card
         self.creative_director = creative_director
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
@@ -139,6 +149,20 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Detail-Akzent: {accent.name}")
 
+    def set_session_moment(self, moment: SessionMoment | None) -> None:
+        self.session_moment = moment.model_copy(deep=True) if moment is not None else None
+        if moment is None:
+            self.status.setText("Session-Moment: aus")
+        else:
+            self.status.setText(f"Wiedereinstieg: {moment.title}")
+
+    def set_twist_card(self, card: TwistCard | None) -> None:
+        self.twist_card = card.model_copy(deep=True) if card is not None else None
+        if card is None:
+            self.status.setText("Twist: keiner")
+        else:
+            self.status.setText(f"Twist für nächste Antwort: {card.name}")
+
     def refresh_creative_overlays(self) -> None:
         if self.conversations is None:
             return
@@ -157,6 +181,10 @@ class ModeAwareChatWidget(ChatWidget):
             self.mood_grade = self.mood_repository.active(conversation_id)
         if self.detail_repository is not None:
             self.detail_accent = self.detail_repository.active(conversation_id)
+        if self.moment_repository is not None:
+            self.session_moment = self.moment_repository.active(conversation_id)
+        if self.twist_repository is not None:
+            self.twist_card = self.twist_repository.active(conversation_id)
 
     def set_conversation(self, conversation_id: str) -> None:
         if self.conversations is None:
@@ -203,6 +231,8 @@ class ModeAwareChatWidget(ChatWidget):
             tags.extend(self.mood_grade.style_tags)
         if self.detail_accent is not None:
             tags.extend(self.detail_accent.style_tags)
+        if self.twist_card is not None:
+            tags.extend(self.twist_card.style_tags)
 
         result: list[str] = []
         seen: set[str] = set()
@@ -254,6 +284,16 @@ class ModeAwareChatWidget(ChatWidget):
             return ""
         return self.detail_accent.prompt_text()
 
+    def _session_moment_context(self) -> str:
+        if self.session_moment is None:
+            return ""
+        return self.session_moment.prompt_text()
+
+    def _twist_context(self) -> str:
+        if self.twist_card is None:
+            return ""
+        return self.twist_card.prompt_text()
+
     def _creative_signature(self) -> str:
         parts = [
             f"look:{self.look_preset.id if self.look_preset else 'base'}",
@@ -267,6 +307,7 @@ class ModeAwareChatWidget(ChatWidget):
             f"motif:{self.visual_motif.id if self.visual_motif else 'base'}",
             f"mood:{self.mood_grade.id if self.mood_grade else 'base'}",
             f"detail:{self.detail_accent.id if self.detail_accent else 'base'}",
+            f"twist:{self.twist_card.id if self.twist_card else 'none'}",
         ]
         return "|".join(parts)
 
@@ -299,40 +340,61 @@ class ModeAwareChatWidget(ChatWidget):
             self._mood_grade_context(),
             self._detail_accent_context(),
             self._anti_repetition_context(),
+            self._session_moment_context(),
+            self._twist_context(),
         )
 
     def _model_completed(self, reply: str) -> None:
-        # Finish the current response and its media planning with the context that
-        # produced it. Any automatic rotation below applies only to the next turn.
+        # Finish the response and media planning with the exact context that produced it.
+        # One-shot twists and automatic rotations below only affect later turns.
+        used_signature = self._creative_signature()
+        used_twist = self.twist_card.model_copy(deep=True) if self.twist_card is not None else None
         super()._model_completed(reply)
+
         conversation_id = self.conversations.active_id() if self.conversations is not None else None
         if conversation_id and self.anti_repetition_repository is not None:
             self.anti_repetition_repository.record_reply(
                 conversation_id,
                 reply,
-                self._creative_signature(),
+                used_signature,
             )
-        if self.creative_director is None or conversation_id is None:
-            return
-        result = self.creative_director.maybe_rotate(
-            conversation_id,
-            assistant_count=self.store.assistant_message_count(),
-        )
-        if result is None or not result.changed_anything:
-            return
-        self.refresh_creative_overlays()
-        labels = {
-            "look": "Look",
-            "variety": "Impuls",
-            "arc": "Arc",
-            "scene_mix": "Scene Mixer",
-            "visual_motif": "Visual-Motiv",
-            "mood_grade": "Mood-Grade",
-            "detail_accent": "Detail-Akzent",
-        }
-        summary = ", ".join(labels.get(item, item) for item in result.changed)
-        self.status.setText(f"Kreative Regie für nächste Antwort: {summary}")
-        self.creative_context_changed.emit()
+
+        changed_labels: list[str] = []
+        if conversation_id and self.twist_repository is not None:
+            if used_twist is not None:
+                self.twist_repository.clear(conversation_id)
+                self.twist_card = None
+            scheduled = self.twist_repository.maybe_schedule(
+                conversation_id,
+                assistant_count=self.store.assistant_message_count(),
+            )
+            if scheduled is not None:
+                self.twist_card = scheduled
+                changed_labels.append(f"Twist: {scheduled.name}")
+            elif used_twist is not None:
+                changed_labels.append("Twist verbraucht")
+
+        if self.creative_director is not None and conversation_id is not None:
+            result = self.creative_director.maybe_rotate(
+                conversation_id,
+                assistant_count=self.store.assistant_message_count(),
+            )
+            if result is not None and result.changed_anything:
+                self.refresh_creative_overlays()
+                labels = {
+                    "look": "Look",
+                    "variety": "Impuls",
+                    "arc": "Arc",
+                    "scene_mix": "Scene Mixer",
+                    "visual_motif": "Visual-Motiv",
+                    "mood_grade": "Mood-Grade",
+                    "detail_accent": "Detail-Akzent",
+                }
+                changed_labels.extend(labels.get(item, item) for item in result.changed)
+
+        if changed_labels:
+            self.status.setText("Für die nächste Antwort: " + ", ".join(changed_labels))
+            self.creative_context_changed.emit()
 
     def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
         if not self.media_service or not self.media_service.enabled:
@@ -365,6 +427,12 @@ class ModeAwareChatWidget(ChatWidget):
         detail_context = self._detail_accent_context()
         if detail_context:
             planner_parts.append(f"Temporary detail accent: {detail_context}")
+        moment_context = self._session_moment_context()
+        if moment_context:
+            planner_parts.append(f"User-selected saved session moment: {moment_context}")
+        twist_context = self._twist_context()
+        if twist_context:
+            planner_parts.append(f"One-shot twist for this response: {twist_context}")
         anti_context = self._anti_repetition_context()
         if anti_context:
             planner_parts.append(f"Local anti-repetition guidance: {anti_context}")
