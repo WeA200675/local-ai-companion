@@ -9,4 +9,13 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Set-Location $repoRoot
+
+# On the recommended Windows launcher path, the setup module is effectively a
+# no-op after it has been completed. On first run it opens the local readiness
+# wizard before the main desktop process is started.
+& $venvPython -m app.first_run
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 & $venvPython -m app.main
