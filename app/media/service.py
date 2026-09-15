@@ -4,9 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from app.ai.creative_accents import default_detail_accents, default_mood_grades
+from app.ai.look_presets import default_look_presets
 from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
+from app.ai.scene_mixer import ATMOSPHERES, COMPOSITIONS, LIGHTING, SETTINGS
+from app.ai.visual_motifs import default_visual_motifs
 from app.media.comfyui import ComfyUIClient, ComfyUIError, GeneratedMedia
+from app.media.coverage import VisualCoverageRepository
 from app.media.planner import MediaIntent, MediaPlanner
 from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
 from app.media.prompting import build_visual_prompt
@@ -44,6 +49,7 @@ class MediaService:
         self.store = store
         self.settings = settings or AppSettings()
         self.planner = MediaPlanner()
+        self.coverage = VisualCoverageRepository(store) if store is not None else None
         self.workflow_profiles: list[WorkflowProfile] = []
         if self.settings.profile_catalog_path is not None:
             try:
@@ -62,6 +68,12 @@ class MediaService:
 
     def close(self) -> None:
         self.backend.close()
+
+    def _active_conversation_id(self) -> str:
+        if self.store is None:
+            return "main"
+        value = self.store._load_app_state("active_conversation_id")  # noqa: SLF001
+        return value.strip() if value and value.strip() else "main"
 
     def _visual_cues(self, limit: int = 8) -> tuple[list[str], list[str]]:
         if self.store is None:
@@ -129,6 +141,62 @@ class MediaService:
             reference_available=reference_path is not None,
         )
 
+    @staticmethod
+    def _match_by_tags(items: Iterable[object], tags: set[str]) -> object | None:
+        best = None
+        best_score = 0
+        for item in items:
+            style_tags = getattr(item, "style_tags", [])
+            score = sum(1 for tag in style_tags if str(tag).strip().casefold() in tags)
+            if score > best_score:
+                best = item
+                best_score = score
+        return best if best_score > 0 else None
+
+    def _record_visual_coverage(self, kind: str, preference_tags: list[str]) -> None:
+        if self.coverage is None:
+            return
+        conversation_id = self._active_conversation_id()
+        tags = {item.strip().casefold() for item in preference_tags if item.strip()}
+
+        look = self._match_by_tags(default_look_presets(), tags)
+        setting = self._match_by_tags(SETTINGS, tags)
+        lighting = self._match_by_tags(LIGHTING, tags)
+        composition = self._match_by_tags(COMPOSITIONS, tags)
+        atmosphere = self._match_by_tags(ATMOSPHERES, tags)
+        motif = self._match_by_tags(default_visual_motifs(), tags)
+        mood = self._match_by_tags(default_mood_grades(), tags)
+        detail = self._match_by_tags(default_detail_accents(), tags)
+
+        scene_mix = None
+        if any(item is not None for item in (setting, lighting, composition, atmosphere)):
+            components = {
+                "setting": getattr(setting, "id", ""),
+                "lighting": getattr(lighting, "id", ""),
+                "composition": getattr(composition, "id", ""),
+                "atmosphere": getattr(atmosphere, "id", ""),
+            }
+            # Coverage only needs component IDs; a tiny compatible object keeps the
+            # repository interface aligned with the real SceneMix model.
+            from app.ai.scene_mixer import SceneMix
+
+            scene_mix = SceneMix(
+                signature=":".join(components.values()),
+                title="coverage snapshot",
+                context="",
+                component_ids={key: value for key, value in components.items() if value},
+            )
+
+        self.coverage.record(
+            conversation_id,
+            kind=kind,
+            look_id=getattr(look, "id", None),
+            scene_mix=scene_mix,
+            motif_id=getattr(motif, "id", None),
+            mood_id=getattr(mood, "id", None),
+            detail_id=getattr(detail, "id", None),
+        )
+
     def plan(
         self,
         *,
@@ -142,6 +210,9 @@ class MediaService:
 
         tags = [tag.strip() for tag in preference_tags if tag.strip()]
         liked_cues, disliked_cues = self._visual_cues()
+        coverage_guidance = ""
+        if self.coverage is not None:
+            coverage_guidance = self.coverage.guidance(self._active_conversation_id())
         available_profile_kinds = sorted(
             {
                 kind
@@ -168,7 +239,7 @@ Return exactly one JSON object matching this schema:
 Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion materially improves the moment.
 Configured local workflow capabilities: {available_text}.
 Keep every depicted person clearly adult. Visuals may be provocative, fetish-inspired, dominant, teasing, sensual, or dark, but do not plan graphic sexual acts, genital-focused imagery, minors, coercive violence, gore, or injury.
-Use historical image feedback as a soft style preference only; the user's current request and scene context take priority.
+Use historical image feedback and local coverage only as soft visual guidance; the user's current request and explicit creative context take priority.
 When the recurring companion character is depicted and continuity is enabled, use continuity_key "{self.settings.continuity_key}". Otherwise use null.
 Do not include prose outside the JSON object."""
         context = (
@@ -180,7 +251,8 @@ Do not include prose outside the JSON object."""
             f"Visual continuity enabled: {self.settings.continuity_enabled}\n"
             f"Preference tags: {', '.join(tags[:24]) if tags else 'none'}\n"
             f"Historically liked visual cues: {', '.join(liked_cues) if liked_cues else 'none yet'}\n"
-            f"Historically disliked visual cues: {', '.join(disliked_cues) if disliked_cues else 'none yet'}\n\n"
+            f"Historically disliked visual cues: {', '.join(disliked_cues) if disliked_cues else 'none yet'}\n"
+            f"Visual coverage guidance: {coverage_guidance or 'none yet'}\n\n"
             f"User message:\n{user_text}\n\n"
             f"Companion reply:\n{assistant_text}"
         )
@@ -205,16 +277,17 @@ Do not include prose outside the JSON object."""
         persona: PersonaState,
         preference_tags: Iterable[str] = (),
     ) -> MediaResult | None:
+        preference_list = [item for item in preference_tags]
         intent = self.plan(
             user_text=user_text,
             assistant_text=assistant_text,
             persona=persona,
-            preference_tags=preference_tags,
+            preference_tags=preference_list,
         )
         if not intent.generate:
             return None
 
-        positive, negative = build_visual_prompt(intent, persona, preference_tags)
+        positive, negative = build_visual_prompt(intent, persona, preference_list)
         liked_cues, disliked_cues = self._visual_cues(limit=6)
         if liked_cues:
             positive = f"{positive}, preferred visual cues: {', '.join(liked_cues)}"
@@ -270,6 +343,7 @@ Do not include prose outside the JSON object."""
                 continuity_key=continuity_key,
                 intent=intent_payload,
             )
+            self._record_visual_coverage(generated.kind, preference_list)
 
         return MediaResult(
             intent=intent,
