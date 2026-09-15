@@ -23,7 +23,7 @@ from app.ai.model_compatibility import (
 from app.diagnostics import DiagnosticResult, run_diagnostics
 from app.memory.store import StateStore
 from app.settings import AppSettings
-from app.setup_flow import candidate_settings, core_setup_status
+from app.setup_flow import FirstRunSetupRepository, candidate_settings, core_setup_status
 
 
 class ModelDiscoveryWorker(QThread):
@@ -100,6 +100,7 @@ class FirstRunSetupDialog(QDialog):
         super().__init__(parent)
         self.store = store
         self.settings = settings.model_copy(deep=True)
+        self.setup_repository = FirstRunSetupRepository(store)
         self.compatibility_repository = AdultModelCompatibilityRepository(store)
         self._discovery_worker: ModelDiscoveryWorker | None = None
         self._diagnostic_worker: CoreDiagnosticWorker | None = None
@@ -208,12 +209,11 @@ class FirstRunSetupDialog(QDialog):
 
         QTimer.singleShot(150, self.discover_models)
 
-    def _candidate(self, *, completed: bool | None = None) -> AppSettings:
+    def _candidate(self) -> AppSettings:
         return candidate_settings(
             self.settings,
             model_name=self.model_name.currentText(),
             model_url=self.model_url.text(),
-            completed=completed,
         )
 
     def _selection_changed(self) -> None:
@@ -394,11 +394,12 @@ class FirstRunSetupDialog(QDialog):
             )
             return
         try:
-            settings = self._candidate(completed=True)
+            settings = self._candidate()
         except ValueError as exc:
             QMessageBox.warning(self, "Ungültige Einstellungen", str(exc))
             return
         self.store.save_settings(settings)
+        self.setup_repository.mark_completed()
         self.settings = settings.model_copy(deep=True)
         self.accept()
 
@@ -411,7 +412,5 @@ class FirstRunSetupDialog(QDialog):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        settings = self.settings.model_copy(update={"setup_completed": True}, deep=True)
-        self.store.save_settings(settings)
-        self.settings = settings
+        self.setup_repository.mark_completed()
         self.accept()
