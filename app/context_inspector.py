@@ -4,6 +4,7 @@ from math import ceil
 
 from pydantic import BaseModel, Field
 
+from app.ai.adult_intensity import AdultIntensityConfig
 from app.ai.creative_accents import DetailAccent, MoodGrade
 from app.ai.creative_director import CreativeDirectorConfig
 from app.ai.look_presets import LookPreset
@@ -41,6 +42,18 @@ class ContextSnapshot(BaseModel):
     scenario_media_preference: str | None = None
     scenario_compatibility_score: int | None = None
     scenario_random_seed: int | None = None
+    sexuality_current: int = 1
+    sexuality_max: int = 4
+    sexuality_label: str = "Flirtend"
+    sexuality_locked: bool = False
+    kink_current: int = 0
+    kink_max: int = 4
+    kink_label: str = "Konventionell"
+    kink_locked: bool = False
+    adult_dynamic_escalation: bool = True
+    adult_preferences: list[str] = Field(default_factory=list)
+    adult_boundaries: list[str] = Field(default_factory=list)
+    adult_intensity_context: str = ""
     base_traits: dict[str, float]
     effective_traits: dict[str, float]
     locked_traits: list[str]
@@ -136,6 +149,7 @@ def build_context_snapshot(
     session_moment: SessionMoment | None = None,
     twist_card: TwistCard | None = None,
     scenario_seed: ScenarioSeedSelection | None = None,
+    adult_intensity: AdultIntensityConfig | None = None,
     twist_auto_enabled: bool = False,
     twist_interval: int | None = None,
     anti_repetition_context: str = "",
@@ -201,6 +215,8 @@ def build_context_snapshot(
     detail_accent_context = detail_accent.prompt_text() if detail_accent is not None else ""
     session_moment_context = session_moment.prompt_text() if session_moment is not None else ""
     twist_context = twist_card.prompt_text() if twist_card is not None else ""
+    adult = adult_intensity or AdultIntensityConfig()
+    adult_intensity_context = adult.prompt_text()
 
     core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
     adaptive_memory = (
@@ -227,6 +243,7 @@ def build_context_snapshot(
         twist_context,
         scene_evolution_context,
         ritual_context,
+        adult_intensity_context,
     )
 
     conversation_id: str | None = None
@@ -316,6 +333,18 @@ def build_context_snapshot(
             scenario_seed.compatibility_score if scenario_seed is not None else None
         ),
         scenario_random_seed=scenario_seed.random_seed if scenario_seed is not None else None,
+        sexuality_current=adult.sexuality_current,
+        sexuality_max=adult.sexuality_max,
+        sexuality_label=adult.sexuality_label,
+        sexuality_locked=adult.sexuality_locked,
+        kink_current=adult.kink_current,
+        kink_max=adult.kink_max,
+        kink_label=adult.kink_label,
+        kink_locked=adult.kink_locked,
+        adult_dynamic_escalation=adult.dynamic_escalation,
+        adult_preferences=list(adult.kink_preferences),
+        adult_boundaries=list(adult.boundaries),
+        adult_intensity_context=adult_intensity_context,
         base_traits=base_traits,
         effective_traits=effective_traits,
         locked_traits=locked_traits,
