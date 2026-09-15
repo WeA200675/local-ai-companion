@@ -162,3 +162,34 @@ def test_prompt_exposes_adult_intensity_as_temporary_user_control() -> None:
     assert "consensual adult fictional interaction" in prompt
     assert "Never exceed the configured sexuality or kink maximum" in prompt
     assert "must never silently change persona traits, memories, or user preferences" in prompt
+
+
+def test_visual_tags_scale_with_current_adult_levels_and_encode_boundaries() -> None:
+    gentle = AdultIntensityConfig(sexuality_current=0, kink_current=0)
+    intense = AdultIntensityConfig(
+        sexuality_current=4,
+        kink_current=4,
+        boundaries=["example boundary"],
+    )
+
+    assert gentle.visual_style_tags() == []
+    intense_tags = intense.visual_style_tags()
+    assert "high-intensity adult erotic atmosphere" in intense_tags
+    assert "unconventional fetish-inspired adult styling" in intense_tags
+    assert "avoid:example boundary" in intense_tags
+
+
+def test_visual_summary_is_media_safe_and_does_not_force_generation() -> None:
+    config = AdultIntensityConfig(
+        sexuality_current=3,
+        kink_current=2,
+        boundaries=["example boundary"],
+    )
+
+    text = config.visual_text()
+
+    assert "sexuality 3/4" in text
+    assert "kink 2/4" in text
+    assert "example boundary" in text
+    assert "do not force a medium" in text
+    assert "graphic sexual acts" in text
