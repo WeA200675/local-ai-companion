@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -27,6 +28,11 @@ from app.media.setup_assistant import (
     run_workflow_smoke_test,
     save_generated_profile,
     settings_with_auto_setup,
+)
+from app.media.standard_workflow import (
+    ComfyUICheckpointInventory,
+    discover_checkpoint_inventory,
+    save_standard_image_workflow,
 )
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -71,8 +77,25 @@ class MediaSetupWorker(QThread):
         self.completed.emit(setup, render_result, str(catalog), configured)
 
 
+class CheckpointDiscoveryWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, base_url: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._base_url = base_url
+
+    def run(self) -> None:
+        try:
+            inventory = discover_checkpoint_inventory(self._base_url)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(inventory)
+
+
 class MediaSetupWizard(QDialog):
-    """One-click local ComfyUI workflow setup with an optional real smoke render."""
+    """One-click local ComfyUI setup with workflow generation and smoke rendering."""
 
     settings_saved = Signal(object)
 
@@ -86,16 +109,18 @@ class MediaSetupWizard(QDialog):
         self.store = store
         self.settings = settings.model_copy(deep=True)
         self._worker: MediaSetupWorker | None = None
+        self._checkpoint_worker: CheckpointDiscoveryWorker | None = None
         self._inspection: WorkflowAutoSetup | None = None
+        self._checkpoint_inventory: ComfyUICheckpointInventory | None = None
 
         self.setWindowTitle("Local AI Companion — Medien automatisch einrichten")
-        self.resize(900, 720)
+        self.resize(960, 790)
 
         intro = QLabel(
-            "Wähle einen exportierten ComfyUI-Workflow im API-JSON-Format. Der Assistent erkennt "
-            "Prompt-/Seed-Nodes, erstellt lokal einen Workflow-Profilkatalog und kann anschließend "
-            "einen echten, kleinen Test-Render ausführen. Bei Erfolg werden die Medien-Einstellungen "
-            "direkt in der lokalen App-Datenbank gespeichert."
+            "Der Assistent kann jetzt entweder einen vorhandenen ComfyUI-API-Workflow analysieren oder "
+            "aus einem bereits lokal installierten Checkpoint selbst einen Standard-Bildworkflow aus "
+            "ComfyUI-Core-Nodes erzeugen. Danach werden Prompt-/Seed-Nodes erkannt, ein lokaler "
+            "Profilkatalog erstellt und optional ein echter kleiner Test-Render ausgeführt."
         )
         intro.setWordWrap(True)
 
@@ -128,11 +153,40 @@ class MediaSetupWizard(QDialog):
         form.addRow("Lokaler Ausgabeordner", output_row)
         form.addRow("Render-Verifikation", self.run_render_test)
 
+        checkpoint_title = QLabel("Standard-Workflow automatisch erzeugen")
+        checkpoint_title.setStyleSheet("font-weight: 600;")
+        checkpoint_intro = QLabel(
+            "ComfyUI kann seine bereits installierten Bild-Checkpoints über /object_info melden. "
+            "Der Assistent lädt dabei nichts herunter. Wähle einen Checkpoint und erzeuge daraus einen "
+            "minimalen Bildworkflow mit CheckpointLoaderSimple, CLIPTextEncode, EmptyLatentImage, "
+            "KSampler, VAEDecode und SaveImage."
+        )
+        checkpoint_intro.setWordWrap(True)
+
+        self.checkpoint_combo = QComboBox()
+        self.checkpoint_combo.setEnabled(False)
+        self.checkpoint_combo.setMinimumWidth(420)
+        self.discover_checkpoints_button = QPushButton("Installierte Checkpoints erkennen")
+        self.generate_workflow_button = QPushButton("Standard-Bildworkflow erzeugen")
+        self.generate_workflow_button.setEnabled(False)
+        checkpoint_row = QHBoxLayout()
+        checkpoint_row.addWidget(self.checkpoint_combo, 1)
+        checkpoint_row.addWidget(self.discover_checkpoints_button)
+        checkpoint_row.addWidget(self.generate_workflow_button)
+
+        self.checkpoint_license_confirmed = QCheckBox(
+            "Ich habe die Lizenz des ausgewählten Bild-Checkpoints separat geprüft und sie ist für dieses Open-Source-Projekt geeignet."
+        )
+        self.checkpoint_license_confirmed.setToolTip(
+            "ComfyUI liefert über object_info nur technische Namen, keine verlässliche Lizenzmetadatenbank. "
+            "Darum behauptet die App für einen gefundenen Checkpoint keine Lizenz."
+        )
+
         self.status = QLabel("Noch kein Workflow geprüft.")
         self.status.setWordWrap(True)
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
-        self.output.setPlaceholderText("Erkannte Nodes, Fähigkeiten und Test-Ergebnis erscheinen hier.")
+        self.output.setPlaceholderText("Erkannte Checkpoints, Nodes, Fähigkeiten und Test-Ergebnis erscheinen hier.")
 
         self.preview = MediaPreview()
         self.preview.setVisible(False)
@@ -149,14 +203,19 @@ class MediaSetupWizard(QDialog):
         buttons.addWidget(self.close_button)
 
         privacy_note = QLabel(
-            "Alles bleibt lokal. Der Assistent installiert keine Modelle, LoRAs oder Custom Nodes und "
-            "kontaktiert keine Cloud-Dienste. Der Test-Render verwendet nur eine einfache leere Studio-Szene."
+            "Alles bleibt lokal. Der Assistent installiert keine Modelle, Checkpoints, LoRAs oder Custom Nodes und "
+            "kontaktiert keine Cloud-Dienste. Der Test-Render verwendet nur eine einfache leere Studio-Szene. "
+            "Ein automatisch gefundener Checkpoint gilt nicht automatisch als Open Source; seine Lizenz muss separat geprüft werden."
         )
         privacy_note.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.addWidget(intro)
         layout.addLayout(form)
+        layout.addWidget(checkpoint_title)
+        layout.addWidget(checkpoint_intro)
+        layout.addLayout(checkpoint_row)
+        layout.addWidget(self.checkpoint_license_confirmed)
         layout.addWidget(self.status)
         layout.addWidget(self.output, 1)
         layout.addWidget(self.preview, 2)
@@ -166,6 +225,11 @@ class MediaSetupWizard(QDialog):
         browse_workflow.clicked.connect(self._choose_workflow)
         browse_output.clicked.connect(self._choose_output)
         self.workflow_path.textChanged.connect(self._workflow_changed)
+        self.comfy_url.textChanged.connect(self._endpoint_changed)
+        self.checkpoint_combo.currentIndexChanged.connect(self._refresh_generate_button)
+        self.checkpoint_license_confirmed.toggled.connect(self._refresh_generate_button)
+        self.discover_checkpoints_button.clicked.connect(self.discover_checkpoints)
+        self.generate_workflow_button.clicked.connect(self.generate_standard_workflow)
         self.inspect_button.clicked.connect(self.inspect_workflow)
         self.run_button.clicked.connect(self.run_setup)
         self.close_button.clicked.connect(self.close)
@@ -201,6 +265,113 @@ class MediaSetupWizard(QDialog):
         self.preview.setVisible(False)
         self.status.setText("Workflow geändert — bitte erneut analysieren.")
 
+    def _endpoint_changed(self) -> None:
+        self._checkpoint_inventory = None
+        self.checkpoint_combo.clear()
+        self.checkpoint_combo.setEnabled(False)
+        self._refresh_generate_button()
+
+    def _refresh_generate_button(self) -> None:
+        ready = bool(
+            self._checkpoint_inventory
+            and self.checkpoint_combo.currentText().strip()
+            and self.checkpoint_license_confirmed.isChecked()
+            and not (self._checkpoint_worker and self._checkpoint_worker.isRunning())
+        )
+        self.generate_workflow_button.setEnabled(ready)
+
+    def discover_checkpoints(self) -> None:
+        if self._checkpoint_worker is not None and self._checkpoint_worker.isRunning():
+            return
+        base_url = self.comfy_url.text().strip()
+        if not base_url:
+            QMessageBox.information(self, "ComfyUI", "Bitte zuerst eine lokale ComfyUI-URL eintragen.")
+            return
+        self.discover_checkpoints_button.setEnabled(False)
+        self.generate_workflow_button.setEnabled(False)
+        self.status.setText("Lese installierte Checkpoints direkt aus dem lokalen ComfyUI object_info …")
+        worker = CheckpointDiscoveryWorker(base_url, self)
+        worker.completed.connect(self._checkpoints_discovered)
+        worker.failed.connect(self._checkpoint_discovery_failed)
+        worker.finished.connect(self._checkpoint_discovery_finished)
+        self._checkpoint_worker = worker
+        worker.start()
+
+    def _checkpoints_discovered(self, inventory: ComfyUICheckpointInventory) -> None:
+        self._checkpoint_inventory = inventory
+        self.checkpoint_combo.clear()
+        for checkpoint in inventory.checkpoints:
+            self.checkpoint_combo.addItem(checkpoint)
+        self.checkpoint_combo.setEnabled(bool(inventory.checkpoints))
+        self.status.setText(
+            f"{len(inventory.checkpoints)} lokale(r) Checkpoint(s) erkannt. "
+            "Wähle einen aus und bestätige seine separat geprüfte Lizenz."
+        )
+        lines = ["[OK] ComfyUI object_info gelesen.", "Installierte Checkpoints:"]
+        lines.extend(f"- {name}" for name in inventory.checkpoints)
+        if inventory.sampler_names:
+            lines.append(f"Sampler: {', '.join(inventory.sampler_names[:12])}")
+        if inventory.schedulers:
+            lines.append(f"Scheduler: {', '.join(inventory.schedulers[:12])}")
+        lines.append("")
+        lines.append(
+            "Lizenz-Hinweis: Diese Namen stammen technisch aus ComfyUI. Daraus wird keine Open-Source-Lizenz abgeleitet."
+        )
+        self.output.setPlainText("\n".join(lines))
+        self._refresh_generate_button()
+
+    def _checkpoint_discovery_failed(self, error: str) -> None:
+        self._checkpoint_inventory = None
+        self.checkpoint_combo.clear()
+        self.checkpoint_combo.setEnabled(False)
+        self.status.setText("Checkpoint-Erkennung fehlgeschlagen.")
+        self.output.setPlainText(f"[FEHLER] {error}")
+
+    def _checkpoint_discovery_finished(self) -> None:
+        worker = self._checkpoint_worker
+        self._checkpoint_worker = None
+        self.discover_checkpoints_button.setEnabled(True)
+        self._refresh_generate_button()
+        if worker is not None:
+            worker.deleteLater()
+
+    def generate_standard_workflow(self) -> None:
+        inventory = self._checkpoint_inventory
+        checkpoint = self.checkpoint_combo.currentText().strip()
+        if inventory is None or not checkpoint:
+            return
+        if not self.checkpoint_license_confirmed.isChecked():
+            QMessageBox.information(
+                self,
+                "Checkpoint-Lizenz",
+                "Bitte bestätige zuerst, dass du die Lizenz dieses Bild-Checkpoints separat geprüft hast.",
+            )
+            return
+        output_dir = self.output_dir.text().strip()
+        if not output_dir:
+            QMessageBox.warning(self, "Medien-Setup", "Bitte zuerst einen lokalen Ausgabeordner eintragen.")
+            return
+        try:
+            path = save_standard_image_workflow(
+                output_dir,
+                checkpoint,
+                sampler_names=inventory.sampler_names,
+                schedulers=inventory.schedulers,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Standard-Workflow", str(exc))
+            return
+
+        self.workflow_path.setText(str(path))
+        self.output.setPlainText(
+            "[OK] Lokaler Standard-Bildworkflow erzeugt.\n"
+            f"Checkpoint: {checkpoint}\n"
+            f"Datei: {path}\n"
+            "Nodes: CheckpointLoaderSimple → CLIPTextEncode (+/-) → EmptyLatentImage → KSampler → VAEDecode → SaveImage\n\n"
+            "Der Checkpoint wurde nicht heruntergeladen oder verändert."
+        )
+        self.inspect_workflow()
+
     def _settings_from_form(self) -> AppSettings:
         return self.settings.model_copy(
             update={
@@ -216,7 +387,7 @@ class MediaSetupWizard(QDialog):
             QMessageBox.information(
                 self,
                 "Medien-Setup",
-                "Bitte zuerst einen exportierten ComfyUI API-Workflow auswählen.",
+                "Wähle einen exportierten ComfyUI API-Workflow oder erzeuge oben automatisch einen Standard-Bildworkflow.",
             )
             return
         setup = inspect_for_auto_setup(path)
