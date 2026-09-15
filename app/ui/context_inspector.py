@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.context_inspector import ContextSnapshot, build_context_snapshot
+from app.context_inspector import ContextSnapshot, approximate_tokens, build_context_snapshot
 from app.memory.store import StateStore
 from app.ui.mode_chat import ModeAwareChatWidget
 
@@ -38,6 +38,7 @@ class ContextInspectorWidget(QWidget):
         super().__init__(parent)
         self.store = store
         self.chat = chat
+        self._last_storyboard_context = ""
 
         intro = QLabel(
             "Zeigt transparent, welche lokalen Kontextschichten die nächste Chat-Anfrage beeinflussen. "
@@ -101,6 +102,11 @@ class ContextInspectorWidget(QWidget):
             twist_auto_enabled = twist_config.enabled
             twist_interval = twist_config.interval
 
+        storyboard_provider = getattr(self.chat, "_storyboard_context", None)
+        self._last_storyboard_context = (
+            str(storyboard_provider()).strip() if callable(storyboard_provider) else ""
+        )
+
         snapshot = build_context_snapshot(
             store=self.store,
             settings=self.chat.settings,
@@ -129,6 +135,27 @@ class ContextInspectorWidget(QWidget):
             director_config=director_config,
             scene_mix_locks=scene_locks,
         )
+
+        # The chat subclass may add local high-level layers such as Storyboard
+        # Journey context. Show the exact effective system prompt instead of a
+        # close reconstruction so this transparency view stays authoritative.
+        actual_prompt = self.chat._system_prompt()  # noqa: SLF001 - inspector mirrors chat context
+        if actual_prompt != snapshot.system_prompt:
+            old_prompt_tokens = approximate_tokens(snapshot.system_prompt)
+            new_prompt_tokens = approximate_tokens(actual_prompt)
+            snapshot.system_prompt = actual_prompt
+            snapshot.approx_input_tokens = max(
+                0,
+                snapshot.approx_input_tokens - old_prompt_tokens + new_prompt_tokens,
+            )
+            if snapshot.context_window is not None:
+                reserved_reply = snapshot.response_budget or 0
+                snapshot.approx_remaining_tokens = max(
+                    0,
+                    snapshot.context_window
+                    - snapshot.approx_input_tokens
+                    - reserved_reply,
+                )
         self._render(snapshot)
 
     def _render(self, snapshot: ContextSnapshot) -> None:
@@ -177,10 +204,12 @@ class ContextInspectorWidget(QWidget):
         kink_lock = " 🔒" if snapshot.kink_locked else ""
         adult_dynamic = "an" if snapshot.adult_dynamic_escalation else "aus"
 
+        storyboard = self._last_storyboard_context or "aus"
         lines = [
             f"Modell: {snapshot.model_name}",
             f"Unterhaltung: {snapshot.conversation_title or 'Legacy/Hauptchat'}",
             f"Session Studio: {scenario}",
+            f"Storyboard Journey: {storyboard}",
             f"Kontextfenster: {context_window}",
             f"Antwortbudget: {response_budget}",
             f"Geschätzter Input: ~{snapshot.approx_input_tokens} Token",
@@ -237,6 +266,8 @@ class ContextInspectorWidget(QWidget):
         )
         if snapshot.adult_intensity_context:
             lines.extend(["", "Temporärer Intimitätskontext:", f"  {snapshot.adult_intensity_context}"])
+        if self._last_storyboard_context:
+            lines.extend(["", "Aktuelles Storyboard-Kapitel:", f"  {self._last_storyboard_context}"])
         if snapshot.scene_context:
             lines.extend(["", "Temporärer Szenenkontext:", f"  {snapshot.scene_context}"])
         if snapshot.scene_evolution_context:
