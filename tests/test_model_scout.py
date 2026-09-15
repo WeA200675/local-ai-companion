@@ -103,3 +103,36 @@ def test_scout_can_limit_number_of_models(monkeypatch) -> None:
     )
 
     assert [report.model_name for report in scout.reports] == ["one", "three"]
+
+
+def test_scout_can_filter_to_strict_catalog_allowlist(monkeypatch) -> None:
+    opened: list[str] = []
+
+    class FakeClient:
+        def __init__(self, model: str, base_url: str) -> None:
+            self.model = model
+            self.base_url = base_url
+            opened.append(model)
+
+        def list_models(self) -> list[str]:
+            return ["qwen3:8b", "custom-license-model", "dolphin-mistral:7b"]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "app.ai.model_scout.run_adult_model_compatibility",
+        lambda client: _report(client.model, status="compatible", score=90),
+    )
+
+    scout = scout_installed_models(
+        "http://local",
+        client_factory=lambda model, url: FakeClient(model, url),  # type: ignore[arg-type]
+        allowed_models={"qwen3:8b", "dolphin-mistral:7b"},
+    )
+
+    assert [report.model_name for report in scout.reports] == [
+        "dolphin-mistral:7b",
+        "qwen3:8b",
+    ]
+    assert "custom-license-model" not in opened
