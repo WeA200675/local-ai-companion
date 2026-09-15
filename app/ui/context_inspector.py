@@ -108,6 +108,8 @@ class ContextInspectorWidget(QWidget):
             preference_tags=list(self.chat.preference_tags),
             session_mode=self.chat.session_mode,
             scene_preset=self.chat.scene_preset,
+            scene_evolution=self.chat.scene_evolution,
+            active_ritual=self.chat.active_ritual,
             variety_card=self.chat.variety_card,
             look_preset=self.chat.look_preset,
             active_arc=self.chat.active_arc,
@@ -155,6 +157,12 @@ class ContextInspectorWidget(QWidget):
         twist_auto = "aus"
         if snapshot.twist_auto_enabled:
             twist_auto = f"an · frühestens alle {snapshot.twist_interval} Antworten"
+        evolution_auto = "manuell"
+        if snapshot.scene_evolution_automatic:
+            evolution_auto = f"automatisch · alle {snapshot.scene_evolution_interval} Antworten"
+        ritual_auto = "manuell"
+        if snapshot.ritual_automatic:
+            ritual_auto = f"automatisch · alle {snapshot.ritual_interval} Antworten"
 
         lines = [
             f"Modell: {snapshot.model_name}",
@@ -166,6 +174,10 @@ class ContextInspectorWidget(QWidget):
             "",
             f"Session-Modus: {snapshot.session_mode or 'Basis'}",
             f"Szene: {snapshot.scene_name or 'Basis'}",
+            f"Scene Evolution: {snapshot.scene_evolution_name or 'aus'}"
+            + (f" · {snapshot.scene_evolution_stage} · {evolution_auto}" if snapshot.scene_evolution_name else ""),
+            f"Ritual: {snapshot.ritual_name or 'aus'}"
+            + (f" · {snapshot.ritual_step} · {ritual_auto}" if snapshot.ritual_name else ""),
             f"Impuls-Deck: {snapshot.variety_name or 'Basis'}",
             f"Look-Preset: {snapshot.look_name or 'Basis'}",
             f"Session-Arc: {snapshot.arc_name or 'aus'}"
@@ -204,6 +216,10 @@ class ContextInspectorWidget(QWidget):
         )
         if snapshot.scene_context:
             lines.extend(["", "Temporärer Szenenkontext:", f"  {snapshot.scene_context}"])
+        if snapshot.scene_evolution_context:
+            lines.extend(["", "Scene-Evolution-Stufe:", f"  {snapshot.scene_evolution_context}"])
+        if snapshot.ritual_context:
+            lines.extend(["", "Aktueller Ritual-Schritt:", f"  {snapshot.ritual_context}"])
         if snapshot.variety_context:
             lines.extend(["", "Temporärer Abwechslungs-Impuls:", f"  {snapshot.variety_context}"])
         if snapshot.look_context:
