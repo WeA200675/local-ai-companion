@@ -1,8 +1,9 @@
 import json
 
 import httpx
+import pytest
 
-from app.ai.model import ChatMessage, OllamaClient
+from app.ai.model import ChatMessage, LocalModelTimeoutError, OllamaClient
 
 
 def test_ollama_chat_builds_expected_payload() -> None:
@@ -25,6 +26,7 @@ def test_ollama_chat_builds_expected_payload() -> None:
     assert reply == "hello"
     assert captured["model"] == "test-model"
     assert captured["stream"] is False
+    assert captured["keep_alive"] == "20m"
     assert captured["options"] == {"temperature": 0.4}
     assert captured["messages"] == [
         {"role": "system", "content": "System"},
@@ -64,6 +66,7 @@ def test_ollama_chat_stream_yields_chunks_and_applies_tuning_options() -> None:
     assert "".join(chunks) == "Hello!"
     assert captured["model"] == "stream-model"
     assert captured["stream"] is True
+    assert captured["keep_alive"] == "20m"
     assert captured["options"] == {
         "temperature": 0.7,
         "num_ctx": 16384,
@@ -121,4 +124,56 @@ def test_ollama_chat_stream_stops_cooperatively() -> None:
 
     assert received == ["one"]
 
+    http_client.close()
+
+
+def test_ollama_chat_stream_classifies_read_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    client = OllamaClient(
+        model="slow-model",
+        base_url="http://local",
+        client=http_client,
+        timeout=321.0,
+    )
+
+    with pytest.raises(LocalModelTimeoutError) as exc_info:
+        list(
+            client.chat_stream(
+                [ChatMessage(role="user", content="Hi")],
+                system_prompt="System",
+            )
+        )
+
+    message = str(exc_info.value)
+    assert message.startswith("[TIMEOUT]")
+    assert "321" in message
+    assert "ollama ps" in message
+    http_client.close()
+
+
+def test_keep_alive_can_be_overridden() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    client = OllamaClient(
+        model="test-model",
+        base_url="http://local",
+        client=http_client,
+        keep_alive=0,
+    )
+    client.chat(
+        [ChatMessage(role="user", content="Hi")],
+        system_prompt="System",
+    )
+
+    assert captured["keep_alive"] == 0
     http_client.close()

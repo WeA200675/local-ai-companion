@@ -20,25 +20,50 @@ class LocalModelError(RuntimeError):
     """Raised when the local model backend cannot complete a request."""
 
 
+class LocalModelTimeoutError(LocalModelError):
+    """Raised when local inference stays silent longer than the read timeout."""
+
+
 class OllamaClient:
     """Small synchronous adapter for an Ollama-compatible local HTTP API.
 
     The desktop UI calls this client from worker threads. Normal structured
     helper calls remain non-streaming, while interactive chat can consume
     ``chat_stream`` incrementally and cooperatively cancel an in-flight reply.
+
+    Local inference can legitimately take much longer than an ordinary HTTP
+    request, especially after a cold model load or when running CPU-only. The
+    default read timeout therefore allows ten minutes of inactivity while the
+    connection timeout stays short. ``keep_alive`` asks Ollama to keep the model
+    resident for a finite period so repeated replies avoid unnecessary reloads.
     """
 
     def __init__(
         self,
         model: str = "qwen2.5:7b",
         base_url: str = "http://127.0.0.1:11434",
-        timeout: float = 120.0,
+        timeout: float = 600.0,
         client: httpx.Client | None = None,
+        *,
+        connect_timeout: float = 10.0,
+        keep_alive: str | int = "20m",
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.connect_timeout = float(connect_timeout)
+        self.keep_alive = keep_alive
         self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=timeout)
+        if client is None:
+            request_timeout = httpx.Timeout(
+                connect=self.connect_timeout,
+                read=self.timeout,
+                write=min(self.timeout, 60.0),
+                pool=min(self.connect_timeout, 10.0),
+            )
+            self._client = httpx.Client(timeout=request_timeout)
+        else:
+            self._client = client
 
     def close(self) -> None:
         if self._owns_client:
@@ -104,11 +129,44 @@ class OllamaClient:
             options["num_predict"] = num_predict
         return options
 
+    def _base_payload(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        system_prompt: str,
+        stream: bool,
+        temperature: float,
+        num_ctx: int | None = None,
+        num_predict: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "messages": self._wire_messages(messages, system_prompt),
+            "stream": stream,
+            "keep_alive": self.keep_alive,
+            "options": self._chat_options(
+                temperature,
+                num_ctx=num_ctx,
+                num_predict=num_predict,
+            ),
+        }
+
+    def _timeout_error(self) -> LocalModelTimeoutError:
+        seconds = int(self.timeout) if self.timeout.is_integer() else self.timeout
+        return LocalModelTimeoutError(
+            "[TIMEOUT] Das lokale Modell hat zu lange keine Daten geliefert "
+            f"(Inaktivitätslimit {seconds} s). Ollama kann weiterhin laufen; "
+            "das Modell lädt möglicherweise noch oder rechnet auf CPU/GPU sehr langsam. "
+            "Prüfe `ollama ps`, reduziere bei Bedarf Kontext/Antwortlimit oder verwende ein kleineres Modell."
+        )
+
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self._client.post(f"{self.base_url}/api/chat", json=payload)
             response.raise_for_status()
             data = response.json()
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error() from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise LocalModelError(f"Local model request failed: {exc}") from exc
         if not isinstance(data, dict):
@@ -124,16 +182,14 @@ class OllamaClient:
         num_ctx: int | None = None,
         num_predict: int | None = None,
     ) -> str:
-        payload = {
-            "model": self.model,
-            "messages": self._wire_messages(messages, system_prompt),
-            "stream": False,
-            "options": self._chat_options(
-                temperature,
-                num_ctx=num_ctx,
-                num_predict=num_predict,
-            ),
-        }
+        payload = self._base_payload(
+            messages,
+            system_prompt=system_prompt,
+            stream=False,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            num_predict=num_predict,
+        )
         data = self._post_chat(payload)
         content = data.get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
@@ -158,16 +214,14 @@ class OllamaClient:
         persist already emitted text.
         """
 
-        payload = {
-            "model": self.model,
-            "messages": self._wire_messages(messages, system_prompt),
-            "stream": True,
-            "options": self._chat_options(
-                temperature,
-                num_ctx=num_ctx,
-                num_predict=num_predict,
-            ),
-        }
+        payload = self._base_payload(
+            messages,
+            system_prompt=system_prompt,
+            stream=True,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            num_predict=num_predict,
+        )
         emitted = False
         try:
             with self._client.stream(
@@ -201,6 +255,8 @@ class OllamaClient:
                         break
         except LocalModelError:
             raise
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error() from exc
         except httpx.HTTPError as exc:
             raise LocalModelError(f"Local model streaming request failed: {exc}") from exc
 
@@ -218,13 +274,13 @@ class OllamaClient:
     ) -> dict[str, Any]:
         """Request a JSON object from an Ollama-compatible backend."""
 
-        payload = {
-            "model": self.model,
-            "messages": self._wire_messages(messages, system_prompt),
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": temperature},
-        }
+        payload = self._base_payload(
+            messages,
+            system_prompt=system_prompt,
+            stream=False,
+            temperature=temperature,
+        )
+        payload["format"] = "json"
         data = self._post_chat(payload)
         content = data.get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
