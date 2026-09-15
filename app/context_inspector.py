@@ -9,6 +9,7 @@ from app.ai.creative_director import CreativeDirectorConfig
 from app.ai.look_presets import LookPreset
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
+from app.ai.scenario_seeds import ScenarioSeedSelection
 from app.ai.scene_evolution import ActiveRitual, ActiveSceneEvolution
 from app.ai.scene_mixer import SceneMix
 from app.ai.scene_presets import ScenePreset
@@ -36,6 +37,10 @@ class ContextSnapshot(BaseModel):
     response_budget: int | None
     conversation_id: str | None = None
     conversation_title: str | None = None
+    scenario_seed_name: str | None = None
+    scenario_media_preference: str | None = None
+    scenario_compatibility_score: int | None = None
+    scenario_random_seed: int | None = None
     base_traits: dict[str, float]
     effective_traits: dict[str, float]
     locked_traits: list[str]
@@ -130,6 +135,7 @@ def build_context_snapshot(
     detail_accent: DetailAccent | None = None,
     session_moment: SessionMoment | None = None,
     twist_card: TwistCard | None = None,
+    scenario_seed: ScenarioSeedSelection | None = None,
     twist_auto_enabled: bool = False,
     twist_interval: int | None = None,
     anti_repetition_context: str = "",
@@ -302,6 +308,14 @@ def build_context_snapshot(
         response_budget=response_budget,
         conversation_id=conversation_id,
         conversation_title=conversation_title,
+        scenario_seed_name=scenario_seed.template_name if scenario_seed is not None else None,
+        scenario_media_preference=(
+            scenario_seed.media_preference if scenario_seed is not None else None
+        ),
+        scenario_compatibility_score=(
+            scenario_seed.compatibility_score if scenario_seed is not None else None
+        ),
+        scenario_random_seed=scenario_seed.random_seed if scenario_seed is not None else None,
         base_traits=base_traits,
         effective_traits=effective_traits,
         locked_traits=locked_traits,
