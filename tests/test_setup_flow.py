@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.diagnostics import DiagnosticResult
 from app.settings import AppSettings
 from app.setup_flow import candidate_settings, core_setup_status, setup_required
@@ -36,6 +38,16 @@ def test_candidate_settings_preserve_unrelated_local_configuration() -> None:
     assert candidate.media_workflow == "workflow.json"
     assert candidate.continuity_key == "olivia-main"
     assert candidate.adaptive_memory_enabled is False
+
+
+def test_candidate_settings_validate_blank_backend_fields() -> None:
+    original = AppSettings()
+
+    with pytest.raises(ValueError):
+        candidate_settings(original, model_name="   ", model_url=original.model_url)
+
+    with pytest.raises(ValueError):
+        candidate_settings(original, model_name=original.model_name, model_url="   ")
 
 
 def test_core_setup_requires_inventory_and_real_inference() -> None:
