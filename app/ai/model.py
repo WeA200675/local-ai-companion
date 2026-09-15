@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 import httpx
 
+from app.ai.backend_health import classify_ollama_failure
+
 Role = Literal["user", "assistant", "system"]
 
 
@@ -84,8 +86,11 @@ class OllamaClient:
             response = self._client.get(f"{self.base_url}/api/tags")
             response.raise_for_status()
             data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise LocalModelError(f"Could not list local models: {exc}") from exc
+        except httpx.HTTPError as exc:
+            failure = classify_ollama_failure(exc, model_name=self.model)
+            raise LocalModelError(f"Could not list local models: {failure.message()}") from exc
+        except ValueError as exc:
+            raise LocalModelError(f"Could not list local models: invalid JSON response: {exc}") from exc
 
         if not isinstance(data, dict):
             raise LocalModelError("Local model list returned an invalid response")
@@ -160,6 +165,14 @@ class OllamaClient:
             "Prüfe `ollama ps`, reduziere bei Bedarf Kontext/Antwortlimit oder verwende ein kleineres Modell."
         )
 
+    def _model_http_error(self, exc: httpx.HTTPError) -> LocalModelError:
+        failure = classify_ollama_failure(
+            exc,
+            model_name=self.model,
+            timeout_seconds=self.timeout,
+        )
+        return LocalModelError(failure.message())
+
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self._client.post(f"{self.base_url}/api/chat", json=payload)
@@ -167,10 +180,15 @@ class OllamaClient:
             data = response.json()
         except httpx.TimeoutException as exc:
             raise self._timeout_error() from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise LocalModelError(f"Local model request failed: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise self._model_http_error(exc) from exc
+        except ValueError as exc:
+            raise LocalModelError(f"Local model returned invalid response JSON: {exc}") from exc
         if not isinstance(data, dict):
             raise LocalModelError("Local model returned an invalid response")
+        error = data.get("error")
+        if isinstance(error, str) and error.strip():
+            raise LocalModelError(f"Ollama meldete einen Inferenzfehler: {error.strip()}")
         return data
 
     def chat(
@@ -206,13 +224,7 @@ class OllamaClient:
         num_predict: int | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> Iterator[str]:
-        """Yield an interactive reply as Ollama NDJSON chunks arrive.
-
-        Cancellation is cooperative: callers provide ``should_stop`` and this
-        method exits as soon as the next stream chunk is observed. No partial
-        response is discarded by the adapter; the caller decides whether to
-        persist already emitted text.
-        """
+        """Yield an interactive reply as Ollama NDJSON chunks arrive."""
 
         payload = self._base_payload(
             messages,
@@ -258,7 +270,7 @@ class OllamaClient:
         except httpx.TimeoutException as exc:
             raise self._timeout_error() from exc
         except httpx.HTTPError as exc:
-            raise LocalModelError(f"Local model streaming request failed: {exc}") from exc
+            raise self._model_http_error(exc) from exc
 
         if should_stop is not None and should_stop():
             return

@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.ai.model import ChatMessage, LocalModelTimeoutError, OllamaClient
+from app.ai.model import ChatMessage, LocalModelError, LocalModelTimeoutError, OllamaClient
 
 
 def test_ollama_chat_builds_expected_payload() -> None:
@@ -152,6 +152,35 @@ def test_ollama_chat_stream_classifies_read_timeout() -> None:
     assert message.startswith("[TIMEOUT]")
     assert "321" in message
     assert "ollama ps" in message
+    http_client.close()
+
+
+def test_ollama_chat_explains_backend_500_with_direct_next_step() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"error": "llama-server process has terminated: exit status 0xc0000005"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+    client = OllamaClient(
+        model="qwen2.5:7b",
+        base_url="http://local",
+        client=http_client,
+    )
+
+    with pytest.raises(LocalModelError) as exc_info:
+        client.chat(
+            [ChatMessage(role="user", content="Hi")],
+            system_prompt="System",
+        )
+
+    message = str(exc_info.value)
+    assert "HTTP 500" in message
+    assert "llama-server process has terminated" in message
+    assert "ollama run qwen2.5:7b" in message
+    assert "unterhalb der Companion-App" in message
     http_client.close()
 
 

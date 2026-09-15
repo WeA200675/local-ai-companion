@@ -62,8 +62,9 @@ def build_readiness_report(
     by_name = _diagnostic_map(diagnostics)
     items: list[ReadinessItem] = []
 
-    model = by_name.get("Sprachmodell")
-    if model is None:
+    model_inventory = by_name.get("Sprachmodell")
+    model_inference = by_name.get("Modell-Inferenz")
+    if model_inventory is None:
         model_item = ReadinessItem(
             key="model",
             title="Lokales Sprachmodell",
@@ -71,20 +72,40 @@ def build_readiness_report(
             detail=f"{settings.model_name} wurde noch nicht lokal geprüft.",
             next_step="Lokale Verbindungen testen.",
         )
-    elif model.ok:
+    elif not model_inventory.ok:
         model_item = ReadinessItem(
             key="model",
             title="Lokales Sprachmodell",
-            state="ready",
-            detail=model.detail,
+            state="blocked",
+            detail=model_inventory.detail,
+            next_step="Ollama starten, Modellinstallation prüfen und den Verbindungstest wiederholen.",
+        )
+    elif model_inference is None:
+        model_item = ReadinessItem(
+            key="model",
+            title="Lokales Sprachmodell",
+            state="attention",
+            detail=(
+                f"{model_inventory.detail}; die echte lokale Mini-Inferenz wurde noch nicht geprüft."
+            ),
+            next_step="Lokale Verbindungen testen, damit auch eine echte Modellantwort verifiziert wird.",
+        )
+    elif not model_inference.ok:
+        model_item = ReadinessItem(
+            key="model",
+            title="Lokales Sprachmodell",
+            state="blocked",
+            detail=f"{model_inventory.detail} · {model_inference.detail}",
+            next_step=(
+                f"Direkt mit `ollama run {settings.model_name} \"Hallo\"` testen und den dortigen Backend-Fehler beheben."
+            ),
         )
     else:
         model_item = ReadinessItem(
             key="model",
             title="Lokales Sprachmodell",
-            state="blocked",
-            detail=model.detail,
-            next_step="Ollama starten, Modellinstallation prüfen und den Verbindungstest wiederholen.",
+            state="ready",
+            detail=f"{model_inventory.detail} · {model_inference.detail}",
         )
     items.append(model_item)
 

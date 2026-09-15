@@ -7,6 +7,7 @@ import tempfile
 
 import httpx
 
+from app.ai.backend_health import classify_ollama_failure
 from app.media.capabilities import inspect_workflow_catalog
 from app.media.profiles import WorkflowProfile, load_workflow_catalog
 from app.settings import AppSettings
@@ -23,13 +24,48 @@ class DiagnosticResult:
         return "OK" if self.ok else "FEHLER"
 
 
-def _check_model(settings: AppSettings, timeout: float) -> DiagnosticResult:
+def _get(
+    url: str,
+    *,
+    timeout: float,
+    client: httpx.Client | None,
+) -> httpx.Response:
+    if client is not None:
+        return client.get(url, timeout=timeout)
+    return httpx.get(url, timeout=timeout)
+
+
+def _post(
+    url: str,
+    *,
+    payload: dict[str, object],
+    timeout: float,
+    client: httpx.Client | None,
+) -> httpx.Response:
+    if client is not None:
+        return client.post(url, json=payload, timeout=timeout)
+    return httpx.post(url, json=payload, timeout=timeout)
+
+
+def _check_model(
+    settings: AppSettings,
+    timeout: float,
+    client: httpx.Client | None,
+) -> DiagnosticResult:
     try:
-        response = httpx.get(f"{settings.model_url.rstrip('/')}/api/tags", timeout=timeout)
+        response = _get(
+            f"{settings.model_url.rstrip('/')}/api/tags",
+            timeout=timeout,
+            client=client,
+        )
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
-        return DiagnosticResult("Sprachmodell", False, f"Endpoint nicht erreichbar: {exc}")
+        if isinstance(exc, httpx.HTTPError):
+            detail = classify_ollama_failure(exc, model_name=settings.model_name).message()
+        else:
+            detail = f"Ollama antwortet, aber die Modellliste ist kein gültiges JSON: {exc}"
+        return DiagnosticResult("Sprachmodell", False, detail)
 
     models = payload.get("models", []) if isinstance(payload, dict) else []
     names = {
@@ -38,17 +74,87 @@ def _check_model(settings: AppSettings, timeout: float) -> DiagnosticResult:
         if isinstance(item, dict)
     }
     if settings.model_name in names:
-        return DiagnosticResult("Sprachmodell", True, f"{settings.model_name} ist verfügbar")
+        return DiagnosticResult("Sprachmodell", True, f"{settings.model_name} ist installiert")
     if names:
         return DiagnosticResult(
             "Sprachmodell",
             False,
-            f"Endpoint läuft, aber {settings.model_name!r} wurde nicht gefunden",
+            f"Ollama läuft, aber {settings.model_name!r} wurde nicht gefunden. Installiert: {', '.join(sorted(names))}",
         )
     return DiagnosticResult(
         "Sprachmodell",
         False,
-        "Endpoint läuft, meldet aber keine installierten Modelle",
+        "Ollama läuft, meldet aber keine installierten Modelle. Prüfe `ollama list`.",
+    )
+
+
+def _check_model_inference(
+    settings: AppSettings,
+    timeout: float,
+    inventory: DiagnosticResult,
+    client: httpx.Client | None,
+) -> DiagnosticResult:
+    if not inventory.ok:
+        return DiagnosticResult(
+            "Modell-Inferenz",
+            False,
+            "Nicht ausgeführt, weil der Ollama-Endpoint oder das konfigurierte Modell noch nicht bereit ist.",
+        )
+
+    inference_timeout = max(45.0, timeout)
+    payload: dict[str, object] = {
+        "model": settings.model_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": "Antworte kurz mit OK. Dies ist nur ein lokaler technischer Funktionstest.",
+            }
+        ],
+        "stream": False,
+        "keep_alive": "5m",
+        "options": {
+            "temperature": 0,
+            "num_predict": 8,
+        },
+    }
+    try:
+        response = _post(
+            f"{settings.model_url.rstrip('/')}/api/chat",
+            payload=payload,
+            timeout=inference_timeout,
+            client=client,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPError as exc:
+        failure = classify_ollama_failure(
+            exc,
+            model_name=settings.model_name,
+            timeout_seconds=inference_timeout,
+        )
+        return DiagnosticResult("Modell-Inferenz", False, failure.message())
+    except ValueError as exc:
+        return DiagnosticResult(
+            "Modell-Inferenz",
+            False,
+            f"Ollama antwortete auf die Inferenz, aber nicht mit gültigem JSON: {exc}",
+        )
+
+    message = data.get("message") if isinstance(data, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        error = data.get("error") if isinstance(data, dict) else None
+        detail = (
+            f"Ollama meldete: {' '.join(error.split())}"
+            if isinstance(error, str) and error.strip()
+            else "Ollama lieferte eine leere oder ungültige Chat-Antwort."
+        )
+        return DiagnosticResult("Modell-Inferenz", False, detail)
+
+    return DiagnosticResult(
+        "Modell-Inferenz",
+        True,
+        f"{settings.model_name} hat eine echte lokale Mini-Inferenz erfolgreich abgeschlossen.",
     )
 
 
@@ -269,11 +375,19 @@ def _check_workflow(settings: AppSettings) -> DiagnosticResult:
     return _check_legacy_workflow(settings)
 
 
-def _check_comfyui(settings: AppSettings, timeout: float) -> DiagnosticResult:
+def _check_comfyui(
+    settings: AppSettings,
+    timeout: float,
+    client: httpx.Client | None,
+) -> DiagnosticResult:
     if not settings.media_enabled:
         return DiagnosticResult("ComfyUI", True, "Mediengenerierung ist deaktiviert")
     try:
-        response = httpx.get(f"{settings.media_url.rstrip('/')}/system_stats", timeout=timeout)
+        response = _get(
+            f"{settings.media_url.rstrip('/')}/system_stats",
+            timeout=timeout,
+            client=client,
+        )
         response.raise_for_status()
     except httpx.HTTPError as exc:
         return DiagnosticResult("ComfyUI", False, f"Endpoint nicht erreichbar: {exc}")
@@ -291,11 +405,19 @@ def _check_output(settings: AppSettings) -> DiagnosticResult:
     return DiagnosticResult("Medien-Ausgabe", True, f"Beschreibbar: {path}")
 
 
-def run_diagnostics(settings: AppSettings, timeout: float = 5.0) -> list[DiagnosticResult]:
-    """Run short local-only preflight checks without contacting cloud services."""
+def run_diagnostics(
+    settings: AppSettings,
+    timeout: float = 5.0,
+    *,
+    client: httpx.Client | None = None,
+) -> list[DiagnosticResult]:
+    """Run local-only preflight checks, including one real mini model inference."""
 
+    model_inventory = _check_model(settings, timeout, client)
+    model_inference = _check_model_inference(settings, timeout, model_inventory, client)
     results = [
-        _check_model(settings, timeout),
+        model_inventory,
+        model_inference,
         _check_workflow(settings),
     ]
     media_capabilities = _check_media_capabilities(settings)
@@ -303,7 +425,7 @@ def run_diagnostics(settings: AppSettings, timeout: float = 5.0) -> list[Diagnos
         results.append(media_capabilities)
     results.extend(
         [
-            _check_comfyui(settings, timeout),
+            _check_comfyui(settings, timeout, client),
             _check_output(settings),
         ]
     )
