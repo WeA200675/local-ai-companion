@@ -104,18 +104,18 @@ def main() -> int:
     parser.add_argument(
         "--compare",
         action="store_true",
-        help="nach Katalog-/Installationsaktionen alle installierten Modelle vergleichen",
+        help="nach Katalog-/Installationsaktionen installierte Katalogmodelle vergleichen",
     )
     parser.add_argument(
         "--max-models",
         type=int,
         default=0,
-        help="optional nur die ersten N lokal installierten Modelle prüfen",
+        help="optional nur die ersten N lokal installierten Katalogmodelle prüfen",
     )
     parser.add_argument(
         "--apply-recommended",
         action="store_true",
-        help="empfohlenes Modell nach erfolgreichem Vergleich als App-Modell speichern",
+        help="empfohlenes Katalogmodell nach erfolgreichem Vergleich als App-Modell speichern",
     )
     args = parser.parse_args()
 
@@ -170,15 +170,17 @@ def main() -> int:
     print("Lokaler Modell-Scout")
     print(f"Ollama: {base_url}")
     print(
-        "Verglichen werden nur lokal installierte Modelle. Die Adult-/Kink-Proben sind lokal, "
-        "nicht-grafisch und dienen nur als Kompatibilitätsheuristik."
+        "Verglichen werden nur lokal installierte Modelle aus dem strikten Open-Source-Katalog. "
+        "Die Adult-/Kink-Proben sind lokal, nicht-grafisch und dienen nur als Kompatibilitätsheuristik."
     )
     print()
 
+    allowed_models = {item.ollama_model for item in strict_open_source_models()}
     try:
         scout = scout_installed_models(
             base_url,
             max_models=max(0, int(args.max_models)),
+            allowed_models=allowed_models,
         )
     except (ModelScoutError, ValueError) as exc:
         print(f"[FEHLER] {exc}")
