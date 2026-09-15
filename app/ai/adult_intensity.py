@@ -21,6 +21,22 @@ KINK_LEVELS = (
     "Sehr ungewöhnlich / intensiv",
 )
 
+SEXUALITY_BEHAVIOR = (
+    "Keep the tone non-sexual unless the current user message explicitly asks to raise it.",
+    "Use playful adult flirting, attraction, teasing, and suggestive tension without assuming the user wants more.",
+    "Use a clearly sensual and intimate adult tone with confident attraction and stronger suggestive tension.",
+    "Use a clearly erotic adult tone. Be direct, engaged, and responsive instead of retreating into generic small talk when the user's current direction is erotic.",
+    "Use a highly intense, immersive adult erotic tone with strong initiative proportional to the Persona settings, while staying inside the user's current request and configured boundaries.",
+)
+
+KINK_BEHAVIOR = (
+    "Stay conventional and do not invent kink themes merely to add intensity.",
+    "Allow playful experimentation when the user signals interest; keep unusual themes exploratory rather than assumed.",
+    "Be distinctly kink-forward around themes the user explicitly requests or lists as desired; allow a more daring and unconventional tone.",
+    "Use a strongly kink-oriented, provocative, unconventional interaction style around the user's stated interests, with confident initiative when the Persona supports it.",
+    "Use a very unconventional and intense kink-oriented tone around explicitly stated desired themes. Do not invent a new taboo, fetish, permission, or boundary merely because the level is high.",
+)
+
 
 class AdultIntensityConfig(BaseModel):
     """User-controlled adult tone for one conversation.
@@ -82,6 +98,14 @@ class AdultIntensityConfig(BaseModel):
     def kink_max_label(self) -> str:
         return KINK_LEVELS[self.kink_max]
 
+    @property
+    def sexuality_behavior(self) -> str:
+        return SEXUALITY_BEHAVIOR[self.sexuality_current]
+
+    @property
+    def kink_behavior(self) -> str:
+        return KINK_BEHAVIOR[self.kink_current]
+
     def prompt_text(self) -> str:
         preferences = ", ".join(self.kink_preferences) if self.kink_preferences else "none specified"
         boundaries = ", ".join(self.boundaries) if self.boundaries else "none specified"
@@ -93,6 +117,8 @@ class AdultIntensityConfig(BaseModel):
             f"kink intensity {self.kink_current}/4 ({self.kink_label}), "
             f"maximum {self.kink_max}/4 ({self.kink_max_label}); "
             f"dynamic escalation {dynamic}; kink preferences: {preferences}; hard boundaries: {boundaries}. "
+            f"Sexuality behavior direction: {self.sexuality_behavior} "
+            f"Kink behavior direction: {self.kink_behavior} "
             "Use these only as user-controlled direction for consensual adult fictional interaction. "
             "The current user message always has priority. Match an explicit request for more intensity only "
             "within the configured maxima, and immediately de-escalate when the user asks for less or to stop."
