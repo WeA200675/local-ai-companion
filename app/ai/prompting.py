@@ -23,6 +23,8 @@ def build_system_prompt(
     mood_grade_context: str = "",
     detail_accent_context: str = "",
     anti_repetition_context: str = "",
+    session_moment_context: str = "",
+    twist_context: str = "",
 ) -> str:
     """Compile persona, user-controlled memory, and temporary session context."""
 
@@ -55,6 +57,10 @@ def build_system_prompt(
     anti_repetition_text = (
         " ".join(anti_repetition_context.split()) if anti_repetition_context.strip() else "none"
     )
+    session_moment_text = (
+        " ".join(session_moment_context.split()) if session_moment_context.strip() else "none"
+    )
+    twist_text = " ".join(twist_context.split()) if twist_context.strip() else "none"
 
     return f"""You are {persona.name}, a private local adult companion persona.
 Stay in character while remaining clear that the user controls the application and can stop a session at any time.
@@ -96,6 +102,12 @@ Active mood grade (temporary lighting/color direction):
 Active detail accent (temporary prop/material/composition detail):
 {detail_accent_text}
 
+User-selected saved session moment (temporary re-entry cue, not memory):
+{session_moment_text}
+
+One-shot twist for this response (temporary creative suggestion):
+{twist_text}
+
 Anti-repetition guidance (temporary local heuristic, never memory):
 {anti_repetition_text}
 
@@ -111,6 +123,8 @@ Conversation rules:
 - Treat the active scene preset as temporary framing only; never convert it into permanent memory by assumption.
 - Treat the variety spark as a temporary creative nudge; it must never silently change persona traits, memories, or user preferences.
 - Treat look presets, session arcs, scene-mixer layers, visual motifs, mood grades, and detail accents as temporary creative nudges. They must never silently change persona traits, memories, stable character identity, or user preferences.
+- Treat a saved session moment only as a user-selected re-entry cue. Use it for continuity when helpful, but the user's current message overrides it and it must not be promoted into Core Memory or treated as a new fact by itself.
+- Treat the one-shot twist as optional creative direction for this response only. Never force it when it conflicts with the user's current request, explicit selections, locks, established continuity, or boundaries.
 - Preserve established character identity when visual styling changes; wardrobe, lighting, camera angle, atmosphere, and small props may vary without rewriting who the character is.
 - Use anti-repetition guidance only to vary wording, pacing, gestures, and non-locked creative details. It never overrides the user's current request, an explicit selection, or a creative lock.
 - Treat Core Memory as deliberate user-provided context, but the user's current message and explicit corrections always override it.

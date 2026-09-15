@@ -79,6 +79,8 @@ class ContextInspectorWidget(QWidget):
         conversation_id = None
         anti_repetition_enabled = False
         anti_repetition_context = ""
+        twist_auto_enabled = False
+        twist_interval: int | None = None
         if self.chat.conversations is not None:
             conversation_id = self.chat.conversations.active_id()
         if conversation_id and self.chat.creative_director is not None:
@@ -94,6 +96,10 @@ class ContextInspectorWidget(QWidget):
                 conversation_id,
                 self.chat._creative_signature(),  # noqa: SLF001 - inspector mirrors chat context
             )
+        if conversation_id and self.chat.twist_repository is not None:
+            twist_config = self.chat.twist_repository.config(conversation_id)
+            twist_auto_enabled = twist_config.enabled
+            twist_interval = twist_config.interval
 
         snapshot = build_context_snapshot(
             store=self.store,
@@ -109,6 +115,10 @@ class ContextInspectorWidget(QWidget):
             visual_motif=self.chat.visual_motif,
             mood_grade=self.chat.mood_grade,
             detail_accent=self.chat.detail_accent,
+            session_moment=self.chat.session_moment,
+            twist_card=self.chat.twist_card,
+            twist_auto_enabled=twist_auto_enabled,
+            twist_interval=twist_interval,
             anti_repetition_context=anti_repetition_context,
             anti_repetition_enabled=anti_repetition_enabled,
             conversations=self.chat.conversations,
@@ -142,6 +152,9 @@ class ContextInspectorWidget(QWidget):
         anti = "an" if snapshot.anti_repetition_enabled else "aus"
         if snapshot.anti_repetition_enabled and snapshot.anti_repetition_context:
             anti += " · Hinweis aktiv"
+        twist_auto = "aus"
+        if snapshot.twist_auto_enabled:
+            twist_auto = f"an · frühestens alle {snapshot.twist_interval} Antworten"
 
         lines = [
             f"Modell: {snapshot.model_name}",
@@ -160,6 +173,9 @@ class ContextInspectorWidget(QWidget):
             f"Visual-Motiv: {snapshot.visual_motif_name or 'Basis'}",
             f"Mood-Grade: {snapshot.mood_grade_name or 'Basis'}",
             f"Detail-Akzent: {snapshot.detail_accent_name or 'aus'}",
+            f"Gespeicherter Wiedereinstieg: {snapshot.session_moment_name or 'aus'}",
+            f"Twist für nächste Antwort: {snapshot.twist_name or 'keiner'}",
+            f"Twist-Automatik: {twist_auto}",
             f"Scene Mixer: {snapshot.scene_mix_name or 'aus'}",
             f"Kreative Regie: {director}",
             f"Anti-Wiederholung: {anti}",
@@ -200,6 +216,10 @@ class ContextInspectorWidget(QWidget):
             lines.extend(["", "Aktuelles Mood-Grade:", f"  {snapshot.mood_grade_context}"])
         if snapshot.detail_accent_context:
             lines.extend(["", "Aktueller Detail-Akzent:", f"  {snapshot.detail_accent_context}"])
+        if snapshot.session_moment_context:
+            lines.extend(["", "Aktiver Session-Moment:", f"  {snapshot.session_moment_context}"])
+        if snapshot.twist_context:
+            lines.extend(["", "Einmaliger Twist:", f"  {snapshot.twist_context}"])
         if snapshot.scene_mix_context:
             lines.extend(["", "Scene-Mixer-Layer:", f"  {snapshot.scene_mix_context}"])
         if snapshot.anti_repetition_context:

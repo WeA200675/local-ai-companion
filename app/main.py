@@ -21,6 +21,7 @@ from app.ai.model import OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.scene_mixer import SceneMixerRepository
 from app.ai.session_arcs import SessionArcRepository
+from app.ai.twist_deck import TwistDeckRepository
 from app.ai.variety import VarietyRepository
 from app.ai.visual_motifs import VisualMotifRepository
 from app.backup import BackupError, apply_pending_restore
@@ -29,6 +30,7 @@ from app.media.service import MediaService
 from app.memory.conversation_facade import ConversationStateFacade
 from app.memory.conversations import ConversationRepository
 from app.memory.database import make_session_factory
+from app.memory.session_moments import SessionMomentRepository
 from app.memory.store import StateStore
 from app.privacy import PrivacyConfig, PrivacyStore
 from app.settings import AppSettings
@@ -45,6 +47,7 @@ from app.ui.persona_lab import PersonaLab
 from app.ui.privacy import PrivacyActivityMonitor, PrivacyLockScreen, PrivacySettingsWidget
 from app.ui.scene_presets import ScenePresetsWidget
 from app.ui.session_modes import SessionModesWidget
+from app.ui.session_moments import SessionMomentsTwistsPanel
 from app.ui.settings import SettingsWidget
 from app.ui.variety import VarietyWidget
 
@@ -75,6 +78,11 @@ class MainWindow(QMainWindow):
         self.mood_repository = MoodGradeRepository(self.store)
         self.detail_repository = DetailAccentRepository(self.store)
         self.anti_repetition_repository = AntiRepetitionRepository(self.store)
+        self.moment_repository = SessionMomentRepository(
+            self.store,
+            self.conversations_repository,
+        )
+        self.twist_repository = TwistDeckRepository(self.store)
         self.director_repository = CreativeDirectorRepository(self.store)
         self.creative_director = CreativeDirector(
             self.director_repository,
@@ -129,6 +137,10 @@ class MainWindow(QMainWindow):
             detail_repository=self.detail_repository,
             detail_accent=self.detail_repository.active(active_conversation_id),
             anti_repetition_repository=self.anti_repetition_repository,
+            moment_repository=self.moment_repository,
+            session_moment=self.moment_repository.active(active_conversation_id),
+            twist_repository=self.twist_repository,
+            twist_card=self.twist_repository.active(active_conversation_id),
             creative_director=self.creative_director,
         )
         self.conversations_widget = ConversationsWidget(
@@ -153,6 +165,11 @@ class MainWindow(QMainWindow):
             self.mood_repository,
             self.detail_repository,
             self.anti_repetition_repository,
+            active_conversation_id,
+        )
+        self.session_moments = SessionMomentsTwistsPanel(
+            self.moment_repository,
+            self.twist_repository,
             active_conversation_id,
         )
         self.context_inspector = ContextInspectorWidget(self.store, self.chat)
@@ -217,6 +234,15 @@ class MainWindow(QMainWindow):
             lambda _detail: self.context_inspector.refresh()
         )
         self.creative_accents.anti_repetition_changed.connect(self.context_inspector.refresh)
+        self.session_moments.moment_changed.connect(self.chat.set_session_moment)
+        self.session_moments.moment_changed.connect(
+            lambda _moment: self.context_inspector.refresh()
+        )
+        self.session_moments.twist_changed.connect(self.chat.set_twist_card)
+        self.session_moments.twist_changed.connect(
+            lambda _twist: self.context_inspector.refresh()
+        )
+        self.session_moments.twist_config_changed.connect(self.context_inspector.refresh)
         self.creative_variety.director_applied.connect(self._creative_director_applied)
         self.creative_variety.recipe_applied.connect(self._creative_director_applied)
         self.chat.creative_context_changed.connect(self._creative_director_auto_changed)
@@ -238,6 +264,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.variety_widget, "Impulse")
         self.tabs.addTab(self.creative_variety, "Abwechslung")
         self.tabs.addTab(self.creative_accents, "Mood & Details")
+        self.tabs.addTab(self.session_moments, "Momente & Twists")
         self.tabs.addTab(self.context_inspector, "Kontext")
         self.tabs.addTab(self.session_modes, "Session-Modi")
         self.tabs.addTab(self.scene_presets, "Szenen")
@@ -382,6 +409,7 @@ class MainWindow(QMainWindow):
         self.chat.refresh_creative_overlays()
         self.variety_widget.set_conversation(conversation_id)
         self.creative_accents.refresh_from_repositories()
+        self.session_moments.refresh_from_repositories()
         self.context_inspector.refresh()
 
     def _creative_director_auto_changed(self) -> None:
@@ -389,6 +417,7 @@ class MainWindow(QMainWindow):
         self.variety_widget.set_conversation(conversation_id)
         self.creative_variety.refresh_from_repositories()
         self.creative_accents.refresh_from_repositories()
+        self.session_moments.refresh_from_repositories()
         self.context_inspector.refresh()
 
     def _conversation_changed(self, conversation_id: str) -> None:
@@ -400,6 +429,7 @@ class MainWindow(QMainWindow):
         self.variety_widget.set_conversation(conversation_id)
         self.creative_variety.set_conversation(conversation_id)
         self.creative_accents.set_conversation(conversation_id)
+        self.session_moments.set_conversation(conversation_id)
         self.context_inspector.refresh()
 
     def _persona_changed(self, persona: PersonaState) -> None:

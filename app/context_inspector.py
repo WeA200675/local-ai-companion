@@ -13,10 +13,12 @@ from app.ai.scene_mixer import SceneMix
 from app.ai.scene_presets import ScenePreset
 from app.ai.session_arcs import ActiveArc
 from app.ai.session_modes import SessionMode, TRAIT_NAMES
+from app.ai.twist_deck import TwistCard
 from app.ai.variety import VarietyCard
 from app.ai.visual_motifs import VisualMotif
 from app.memory.conversations import ConversationRepository
 from app.memory.core_memory import CoreMemoryRepository
+from app.memory.session_moments import SessionMoment
 from app.memory.store import StateStore
 from app.settings import AppSettings
 
@@ -54,6 +56,12 @@ class ContextSnapshot(BaseModel):
     mood_grade_context: str = ""
     detail_accent_name: str | None = None
     detail_accent_context: str = ""
+    session_moment_name: str | None = None
+    session_moment_context: str = ""
+    twist_name: str | None = None
+    twist_context: str = ""
+    twist_auto_enabled: bool = False
+    twist_interval: int | None = None
     anti_repetition_enabled: bool = False
     anti_repetition_context: str = ""
     director_enabled: bool = False
@@ -107,6 +115,10 @@ def build_context_snapshot(
     visual_motif: VisualMotif | None = None,
     mood_grade: MoodGrade | None = None,
     detail_accent: DetailAccent | None = None,
+    session_moment: SessionMoment | None = None,
+    twist_card: TwistCard | None = None,
+    twist_auto_enabled: bool = False,
+    twist_interval: int | None = None,
     anti_repetition_context: str = "",
     anti_repetition_enabled: bool = False,
     conversations: ConversationRepository | None = None,
@@ -141,6 +153,8 @@ def build_context_snapshot(
         tags.extend(mood_grade.style_tags)
     if detail_accent is not None:
         tags.extend(detail_accent.style_tags)
+    if twist_card is not None:
+        tags.extend(twist_card.style_tags)
     effective_tags = _dedupe_tags(tags)
 
     scene_context = ""
@@ -157,6 +171,8 @@ def build_context_snapshot(
     visual_motif_context = visual_motif.prompt_text() if visual_motif is not None else ""
     mood_grade_context = mood_grade.prompt_text() if mood_grade is not None else ""
     detail_accent_context = detail_accent.prompt_text() if detail_accent is not None else ""
+    session_moment_context = session_moment.prompt_text() if session_moment is not None else ""
+    twist_context = twist_card.prompt_text() if twist_card is not None else ""
 
     core_memory = CoreMemoryRepository(store).active_prompt_entries(limit=12)
     adaptive_memory = (
@@ -179,6 +195,8 @@ def build_context_snapshot(
         mood_grade_context,
         detail_accent_context,
         anti_repetition_context,
+        session_moment_context,
+        twist_context,
     )
 
     conversation_id: str | None = None
@@ -281,6 +299,12 @@ def build_context_snapshot(
         mood_grade_context=mood_grade_context,
         detail_accent_name=detail_accent.name if detail_accent is not None else None,
         detail_accent_context=detail_accent_context,
+        session_moment_name=session_moment.title if session_moment is not None else None,
+        session_moment_context=session_moment_context,
+        twist_name=twist_card.name if twist_card is not None else None,
+        twist_context=twist_context,
+        twist_auto_enabled=twist_auto_enabled,
+        twist_interval=twist_interval,
         anti_repetition_enabled=anti_repetition_enabled,
         anti_repetition_context=anti_repetition_context,
         director_enabled=bool(director_config and director_config.enabled),
