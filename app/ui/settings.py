@@ -29,6 +29,7 @@ from app.ai.model_compatibility import (
     run_adult_model_compatibility,
 )
 from app.diagnostics import DiagnosticResult, run_diagnostics
+from app.media.workflow_inspector import WorkflowInspection, inspect_workflow_file
 from app.memory.store import StateStore
 from app.readiness import build_readiness_report
 from app.settings import AppSettings
@@ -112,6 +113,7 @@ class SettingsWidget(QWidget):
         self._model_discovery_worker: ModelDiscoveryWorker | None = None
         self._compatibility_worker: AdultCompatibilityWorker | None = None
         self._last_diagnostics: list[DiagnosticResult] = []
+        self._workflow_inspection: WorkflowInspection | None = None
 
         self.model_name = QComboBox()
         self.model_name.setEditable(True)
@@ -294,6 +296,19 @@ class SettingsWidget(QWidget):
             "Führt ausschließlich lokal kurze, nicht-grafische Erwachsenen-Proben aus und erkennt technische Fehler oder klare Ablehnungen."
         )
 
+        self.media_setup_summary = QLabel()
+        self.media_setup_summary.setWordWrap(True)
+        self.media_setup_output = QPlainTextEdit()
+        self.media_setup_output.setReadOnly(True)
+        self.media_setup_output.setMaximumHeight(240)
+        self.media_setup_output.setPlaceholderText(
+            "Wähle einen exportierten ComfyUI API-Workflow und lasse die App die Prompt-/Seed-Nodes erkennen."
+        )
+        self.inspect_workflow_button = QPushButton("Workflow prüfen & Nodes erkennen")
+        self.apply_workflow_nodes_button = QPushButton("Erkannte Nodes übernehmen")
+        self.apply_workflow_nodes_button.setEnabled(False)
+        self.media_diagnostics_button = QPushButton("ComfyUI/Workflow testen")
+
         self.test_button = QPushButton("Lokale Verbindungen testen")
         self.save_button = QPushButton("Einstellungen speichern")
 
@@ -326,9 +341,34 @@ class SettingsWidget(QWidget):
         diagnostics_layout.addLayout(diagnostics_actions)
         diagnostics_layout.addStretch(1)
 
+        media_setup_page = QWidget()
+        media_setup_layout = QVBoxLayout(media_setup_page)
+        media_setup_intro = QLabel(
+            "Dieser Assistent installiert oder lädt nichts automatisch. Er hilft beim lokalen ComfyUI-Anschluss: "
+            "ComfyUI starten, einen API-Workflow auswählen, Prompt-/Seed-Nodes erkennen, übernehmen und anschließend lokal testen."
+        )
+        media_setup_intro.setWordWrap(True)
+        media_setup_layout.addWidget(media_setup_intro)
+        media_setup_layout.addWidget(self.media_setup_summary)
+        media_setup_layout.addWidget(self.media_setup_output)
+        media_setup_actions = QHBoxLayout()
+        media_setup_actions.addWidget(self.inspect_workflow_button)
+        media_setup_actions.addWidget(self.apply_workflow_nodes_button)
+        media_setup_actions.addWidget(self.media_diagnostics_button)
+        media_setup_actions.addStretch(1)
+        media_setup_layout.addLayout(media_setup_actions)
+        media_setup_hint = QLabel(
+            "Hinweis: Der Standard-Workflow-Helfer erwartet einen ComfyUI-Workflow im API-JSON-Format. "
+            "Bei einem Workflow-Profilkatalog bleiben dessen eigene Node-IDs maßgeblich. Modelle, LoRAs und Custom Nodes müssen separat auf ihre Open-Source-Lizenz geprüft werden."
+        )
+        media_setup_hint.setWordWrap(True)
+        media_setup_layout.addWidget(media_setup_hint)
+        media_setup_layout.addStretch(1)
+
         self.settings_tabs = QTabWidget()
         self.settings_tabs.addTab(config_scroll, "Konfiguration")
         self.settings_tabs.addTab(diagnostics_page, "Setup & Diagnose")
+        self.settings_tabs.addTab(media_setup_page, "Medien-Setup")
 
         save_row = QHBoxLayout()
         save_row.addWidget(self.status, 1)
@@ -342,18 +382,22 @@ class SettingsWidget(QWidget):
         self.model_name.currentTextChanged.connect(self._refresh_compatibility_report)
         self.model_url.textChanged.connect(self._refresh_compatibility_report)
         self.media_enabled.toggled.connect(self._refresh_readiness)
-        self.media_url.textChanged.connect(self._refresh_readiness)
-        self.media_workflow.textChanged.connect(self._refresh_readiness)
-        self.media_profile_catalog.textChanged.connect(self._refresh_readiness)
+        self.media_url.textChanged.connect(self._media_setup_fields_changed)
+        self.media_workflow.textChanged.connect(self._workflow_path_changed)
+        self.media_profile_catalog.textChanged.connect(self._media_setup_fields_changed)
         self.media_output_dir.textChanged.connect(self._refresh_readiness)
         workflow_browse.clicked.connect(self._choose_workflow)
         profile_catalog_browse.clicked.connect(self._choose_profile_catalog)
         output_browse.clicked.connect(self._choose_output_dir)
         self.test_button.clicked.connect(self.run_diagnostics)
         self.compatibility_button.clicked.connect(self.run_model_compatibility)
+        self.inspect_workflow_button.clicked.connect(self.inspect_media_workflow)
+        self.apply_workflow_nodes_button.clicked.connect(self.apply_detected_workflow_nodes)
+        self.media_diagnostics_button.clicked.connect(self.run_diagnostics)
         self.save_button.clicked.connect(self.save)
         self._refresh_compatibility_report()
         self._refresh_readiness()
+        self._refresh_media_setup_summary()
 
     def discover_models(self) -> None:
         if self._model_discovery_worker is not None and self._model_discovery_worker.isRunning():
@@ -410,6 +454,8 @@ class SettingsWidget(QWidget):
         )
         if path:
             self.media_workflow.setText(path)
+            self.settings_tabs.setCurrentIndex(2)
+            self.inspect_media_workflow()
 
     def _choose_profile_catalog(self) -> None:
         current = self.media_profile_catalog.text().strip()
@@ -528,6 +574,91 @@ class SettingsWidget(QWidget):
                 lines.append(f"  {index}. {step}")
         self.readiness_output.setPlainText("\n".join(lines))
 
+    def _media_setup_fields_changed(self) -> None:
+        self._refresh_media_setup_summary()
+        self._refresh_readiness()
+
+    def _workflow_path_changed(self) -> None:
+        self._workflow_inspection = None
+        self.apply_workflow_nodes_button.setEnabled(False)
+        self.media_setup_output.clear()
+        self._refresh_media_setup_summary()
+        self._refresh_readiness()
+
+    def _refresh_media_setup_summary(self) -> None:
+        endpoint = self.media_url.text().strip() or "nicht gesetzt"
+        workflow = self.media_workflow.text().strip()
+        catalog = self.media_profile_catalog.text().strip()
+        enabled = "aktiviert" if self.media_enabled.isChecked() else "deaktiviert"
+        if catalog:
+            workflow_state = f"Profilkatalog: {catalog}"
+        elif workflow:
+            workflow_state = f"Standard-Workflow: {workflow}"
+        else:
+            workflow_state = "Noch kein Workflow/Profilkatalog gewählt"
+        self.media_setup_summary.setText(
+            f"Medien: {enabled} · ComfyUI: {endpoint} · {workflow_state}"
+        )
+
+    def inspect_media_workflow(self) -> None:
+        path = self.media_workflow.text().strip()
+        if not path:
+            self._workflow_inspection = None
+            self.apply_workflow_nodes_button.setEnabled(False)
+            self.media_setup_output.setPlainText(
+                "Kein Standard-Workflow gewählt. In ComfyUI einen funktionierenden Workflow im API-JSON-Format exportieren, "
+                "unter Konfiguration auswählen und anschließend erneut prüfen. Bei einem Profilkatalog werden die Node-IDs pro Profil verwaltet."
+            )
+            return
+        inspection = inspect_workflow_file(path)
+        self._workflow_inspection = inspection
+        self.apply_workflow_nodes_button.setEnabled(inspection.complete)
+        self._render_workflow_inspection(inspection)
+
+    def _render_workflow_inspection(self, inspection: WorkflowInspection) -> None:
+        if not inspection.valid:
+            self.media_setup_output.setPlainText(f"[FEHLER] {inspection.error}")
+            return
+        lines = [f"Workflow: {inspection.path or 'direkter JSON-Test'}"]
+        if inspection.complete:
+            lines.extend(
+                [
+                    "[OK] Prompt-/Seed-Verknüpfung erkannt.",
+                    f"Positive Prompt Node: {inspection.positive_node}",
+                    f"Negative Prompt Node: {inspection.negative_node}",
+                    f"Seed Node: {inspection.seed_node} ({inspection.seed_input_key})",
+                    "",
+                    "Mit 'Erkannte Nodes übernehmen' werden nur die drei lokalen Konfigurationsfelder gesetzt. "
+                    "Erst 'Einstellungen speichern' macht sie aktiv.",
+                ]
+            )
+        else:
+            lines.append(
+                "[PRÜFEN] Der Workflow ist JSON, aber die benötigten Prompt-/Seed-Nodes konnten nicht eindeutig automatisch bestimmt werden."
+            )
+        if inspection.warnings:
+            lines.append("")
+            lines.append("Hinweise:")
+            lines.extend(f"- {item}" for item in inspection.warnings)
+        self.media_setup_output.setPlainText("\n".join(lines))
+
+    def apply_detected_workflow_nodes(self) -> None:
+        inspection = self._workflow_inspection
+        if inspection is None or not inspection.complete:
+            QMessageBox.information(
+                self,
+                "ComfyUI-Workflow",
+                "Es gibt noch keine vollständige Node-Erkennung zum Übernehmen.",
+            )
+            return
+        self.media_positive_node.setText(inspection.positive_node or "")
+        self.media_negative_node.setText(inspection.negative_node or "")
+        self.media_seed_node.setText(inspection.seed_node or "")
+        self.status.setText(
+            "Erkannte ComfyUI-Nodes wurden in die Konfiguration übernommen. Zum Aktivieren Einstellungen speichern."
+        )
+        self._refresh_readiness()
+
     def run_model_compatibility(self) -> None:
         if self._compatibility_worker is not None and self._compatibility_worker.isRunning():
             return
@@ -581,6 +712,7 @@ class SettingsWidget(QWidget):
 
         self.settings_tabs.setCurrentIndex(1)
         self.test_button.setEnabled(False)
+        self.media_diagnostics_button.setEnabled(False)
         self.diagnostics_output.setPlainText("Prüfe nur lokale Endpoints und Dateien …")
         worker = DiagnosticsWorker(settings, self)
         worker.completed.connect(self._diagnostics_completed)
@@ -601,6 +733,7 @@ class SettingsWidget(QWidget):
 
     def _diagnostics_finished(self) -> None:
         self.test_button.setEnabled(True)
+        self.media_diagnostics_button.setEnabled(True)
         worker = self._diagnostics_worker
         self._diagnostics_worker = None
         if worker is not None:
@@ -617,10 +750,12 @@ class SettingsWidget(QWidget):
         self.store.save_settings(settings)
         self._refresh_preference_summary()
         self._refresh_readiness()
+        self._refresh_media_setup_summary()
         self.status.setText("Gespeichert. Lokale Backends werden jetzt neu konfiguriert.")
         self.settings_saved.emit(settings)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API name
         self._refresh_compatibility_report()
         self._refresh_readiness()
+        self._refresh_media_setup_summary()
         super().showEvent(event)
