@@ -129,6 +129,17 @@ def test_disabled_dynamic_escalation_does_not_change_levels(tmp_path) -> None:
     assert config.kink_current == 0
 
 
+def test_behavior_curve_becomes_more_direct_without_inventing_new_kinks() -> None:
+    moderate = AdultIntensityConfig(sexuality_current=2, kink_current=1)
+    intense = AdultIntensityConfig(sexuality_current=4, kink_current=4)
+
+    assert "sensual and intimate" in moderate.sexuality_behavior
+    assert "experimentation" in moderate.kink_behavior
+    assert "highly intense" in intense.sexuality_behavior
+    assert "Do not invent a new taboo" in intense.kink_behavior
+    assert "strong initiative" in intense.sexuality_behavior
+
+
 def test_prompt_exposes_adult_intensity_as_temporary_user_control() -> None:
     config = AdultIntensityConfig(
         sexuality_current=3,
@@ -146,6 +157,8 @@ def test_prompt_exposes_adult_intensity_as_temporary_user_control() -> None:
     assert "Adult intimacy controls" in prompt
     assert "sexuality 3/4" in prompt
     assert "kink intensity 2/4" in prompt
+    assert "Sexuality behavior direction" in prompt
+    assert "Kink behavior direction" in prompt
     assert "consensual adult fictional interaction" in prompt
     assert "Never exceed the configured sexuality or kink maximum" in prompt
     assert "must never silently change persona traits, memories, or user preferences" in prompt
