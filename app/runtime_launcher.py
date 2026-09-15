@@ -7,6 +7,7 @@ from app.ai.model_catalog import catalog_model
 from app.ai.model_fallback import FallbackOllamaClient
 from app.ai.model_fallback_state import ModelFallbackPolicy, ModelFallbackRepository
 from app.ai.model_compatibility import AdultModelCompatibilityRepository
+from app.media.comfyui_resilient import ResilientComfyUIClient
 from app.memory.database import make_session_factory
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -69,10 +70,12 @@ def main() -> int:
     policy = ModelFallbackRepository(store).load()
     fallbacks = approved_fallback_models(settings, policy, compatibility_repository)
 
-    # app.main imports OllamaClient as a module global. Replacing that global
-    # before constructing MainWindow keeps the rest of the application unchanged
-    # while making the normal Windows launch path use the configured fallback chain.
+    # app.main imports both backend classes as module globals. Replacing them
+    # before constructing MainWindow keeps the desktop wiring simple while the
+    # normal Windows launch path gains the tested model fallback chain and the
+    # conservative ComfyUI resilience layer.
     desktop_main.OllamaClient = configured_model_client_class(fallbacks)
+    desktop_main.ComfyUIClient = ResilientComfyUIClient
     return desktop_main.main()
 
 
