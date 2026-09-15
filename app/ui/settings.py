@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +30,7 @@ from app.ai.model_compatibility import (
 )
 from app.diagnostics import DiagnosticResult, run_diagnostics
 from app.memory.store import StateStore
+from app.readiness import build_readiness_report
 from app.settings import AppSettings
 
 
@@ -108,6 +111,7 @@ class SettingsWidget(QWidget):
         self._diagnostics_worker: DiagnosticsWorker | None = None
         self._model_discovery_worker: ModelDiscoveryWorker | None = None
         self._compatibility_worker: AdultCompatibilityWorker | None = None
+        self._last_diagnostics: list[DiagnosticResult] = []
 
         self.model_name = QComboBox()
         self.model_name.setEditable(True)
@@ -262,6 +266,16 @@ class SettingsWidget(QWidget):
             "Alle Einstellungen, Memory-Einträge und Lernzustände werden nur lokal gespeichert."
         )
         self.status.setWordWrap(True)
+
+        self.readiness_summary = QLabel()
+        self.readiness_summary.setWordWrap(True)
+        self.readiness_output = QPlainTextEdit()
+        self.readiness_output.setReadOnly(True)
+        self.readiness_output.setMaximumHeight(220)
+        self.readiness_output.setPlaceholderText(
+            "Noch keine lokalen Setup-Checks ausgeführt."
+        )
+
         self.diagnostics_output = QPlainTextEdit()
         self.diagnostics_output.setReadOnly(True)
         self.diagnostics_output.setMaximumHeight(150)
@@ -282,28 +296,56 @@ class SettingsWidget(QWidget):
 
         self.test_button = QPushButton("Lokale Verbindungen testen")
         self.save_button = QPushButton("Einstellungen speichern")
-        action_row = QHBoxLayout()
-        action_row.addWidget(self.test_button)
-        action_row.addWidget(self.compatibility_button)
-        action_row.addStretch(1)
-        action_row.addWidget(self.save_button)
+
+        config_page = QWidget()
+        config_layout = QVBoxLayout(config_page)
+        config_layout.addLayout(form)
+        config_layout.addWidget(self.profile_note)
+        config_layout.addWidget(QLabel("Gelernte visuelle Präferenzen"))
+        config_layout.addWidget(self.preference_summary)
+        config_layout.addStretch(1)
+
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setWidget(config_page)
+
+        diagnostics_page = QWidget()
+        diagnostics_layout = QVBoxLayout(diagnostics_page)
+        diagnostics_layout.addWidget(QLabel("Setup-Status"))
+        diagnostics_layout.addWidget(self.readiness_summary)
+        diagnostics_layout.addWidget(self.readiness_output)
+        diagnostics_layout.addWidget(QLabel("Adult-/Kink-Modellkompatibilität"))
+        diagnostics_layout.addWidget(self.compatibility_status)
+        diagnostics_layout.addWidget(self.compatibility_output)
+        diagnostics_layout.addWidget(QLabel("Lokale Verbindungen und Dateien"))
+        diagnostics_layout.addWidget(self.diagnostics_output)
+        diagnostics_actions = QHBoxLayout()
+        diagnostics_actions.addWidget(self.test_button)
+        diagnostics_actions.addWidget(self.compatibility_button)
+        diagnostics_actions.addStretch(1)
+        diagnostics_layout.addLayout(diagnostics_actions)
+        diagnostics_layout.addStretch(1)
+
+        self.settings_tabs = QTabWidget()
+        self.settings_tabs.addTab(config_scroll, "Konfiguration")
+        self.settings_tabs.addTab(diagnostics_page, "Setup & Diagnose")
+
+        save_row = QHBoxLayout()
+        save_row.addWidget(self.status, 1)
+        save_row.addWidget(self.save_button)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(self.profile_note)
-        layout.addWidget(QLabel("Gelernte visuelle Präferenzen"))
-        layout.addWidget(self.preference_summary)
-        layout.addWidget(QLabel("Adult-/Kink-Modellkompatibilität"))
-        layout.addWidget(self.compatibility_status)
-        layout.addWidget(self.compatibility_output)
-        layout.addWidget(self.status)
-        layout.addWidget(self.diagnostics_output)
-        layout.addStretch(1)
-        layout.addLayout(action_row)
+        layout.addWidget(self.settings_tabs, 1)
+        layout.addLayout(save_row)
 
         self.model_refresh_button.clicked.connect(self.discover_models)
         self.model_name.currentTextChanged.connect(self._refresh_compatibility_report)
         self.model_url.textChanged.connect(self._refresh_compatibility_report)
+        self.media_enabled.toggled.connect(self._refresh_readiness)
+        self.media_url.textChanged.connect(self._refresh_readiness)
+        self.media_workflow.textChanged.connect(self._refresh_readiness)
+        self.media_profile_catalog.textChanged.connect(self._refresh_readiness)
+        self.media_output_dir.textChanged.connect(self._refresh_readiness)
         workflow_browse.clicked.connect(self._choose_workflow)
         profile_catalog_browse.clicked.connect(self._choose_profile_catalog)
         output_browse.clicked.connect(self._choose_output_dir)
@@ -311,6 +353,7 @@ class SettingsWidget(QWidget):
         self.compatibility_button.clicked.connect(self.run_model_compatibility)
         self.save_button.clicked.connect(self.save)
         self._refresh_compatibility_report()
+        self._refresh_readiness()
 
     def discover_models(self) -> None:
         if self._model_discovery_worker is not None and self._model_discovery_worker.isRunning():
@@ -429,6 +472,7 @@ class SettingsWidget(QWidget):
         if not model or not base_url:
             self.compatibility_status.setText("Kein Modell/Endpoint für den Test ausgewählt.")
             self.compatibility_output.clear()
+            self._refresh_readiness()
             return
         report = self.compatibility_repository.report_for(model, base_url)
         if report is None:
@@ -436,8 +480,10 @@ class SettingsWidget(QWidget):
                 f"{model}: noch nicht mit dem lokalen Adult-/Kink-Kompatibilitätstest geprüft."
             )
             self.compatibility_output.clear()
+            self._refresh_readiness()
             return
         self._render_compatibility(report)
+        self._refresh_readiness()
 
     def _render_compatibility(self, report: AdultModelCompatibilityReport) -> None:
         self.compatibility_status.setText(
@@ -454,6 +500,34 @@ class SettingsWidget(QWidget):
         )
         self.compatibility_output.setPlainText("\n".join(lines))
 
+    def _refresh_readiness(self) -> None:
+        try:
+            settings = self._settings_from_form()
+        except ValueError:
+            self.readiness_summary.setText("Setup-Status kann mit den aktuellen Eingaben noch nicht berechnet werden.")
+            return
+        compatibility = self.compatibility_repository.report_for(
+            settings.model_name,
+            settings.model_url,
+        )
+        report = build_readiness_report(
+            settings,
+            self._last_diagnostics,
+            compatibility,
+        )
+        self.readiness_summary.setText(report.summary)
+        lines: list[str] = []
+        for item in report.items:
+            lines.append(f"[{item.marker}] {item.title}: {item.detail}")
+            if item.next_step:
+                lines.append(f"    Nächster Schritt: {item.next_step}")
+        if report.next_steps:
+            lines.append("")
+            lines.append("Empfohlene Reihenfolge:")
+            for index, step in enumerate(report.next_steps, start=1):
+                lines.append(f"  {index}. {step}")
+        self.readiness_output.setPlainText("\n".join(lines))
+
     def run_model_compatibility(self) -> None:
         if self._compatibility_worker is not None and self._compatibility_worker.isRunning():
             return
@@ -463,6 +537,7 @@ class SettingsWidget(QWidget):
             QMessageBox.warning(self, "Ungültige Einstellungen", str(exc))
             return
 
+        self.settings_tabs.setCurrentIndex(1)
         self.compatibility_button.setEnabled(False)
         self.compatibility_output.setPlainText(
             "Prüfe lokal: technische Inferenz, erotischen nicht-grafischen Ton und "
@@ -481,10 +556,12 @@ class SettingsWidget(QWidget):
     def _compatibility_completed(self, report: AdultModelCompatibilityReport) -> None:
         self.compatibility_repository.save_report(report)
         self._render_compatibility(report)
+        self._refresh_readiness()
 
     def _compatibility_failed(self, error: str) -> None:
         self.compatibility_status.setText("[FEHLER] Adult-/Kink-Modelltest konnte nicht abgeschlossen werden.")
         self.compatibility_output.setPlainText(error)
+        self._refresh_readiness()
 
     def _compatibility_finished(self) -> None:
         self.compatibility_button.setEnabled(True)
@@ -502,6 +579,7 @@ class SettingsWidget(QWidget):
             QMessageBox.warning(self, "Ungültige Einstellungen", str(exc))
             return
 
+        self.settings_tabs.setCurrentIndex(1)
         self.test_button.setEnabled(False)
         self.diagnostics_output.setPlainText("Prüfe nur lokale Endpoints und Dateien …")
         worker = DiagnosticsWorker(settings, self)
@@ -512,11 +590,14 @@ class SettingsWidget(QWidget):
         worker.start()
 
     def _diagnostics_completed(self, results: list[DiagnosticResult]) -> None:
+        self._last_diagnostics = list(results)
         lines = [f"[{result.marker}] {result.name}: {result.detail}" for result in results]
         self.diagnostics_output.setPlainText("\n".join(lines))
+        self._refresh_readiness()
 
     def _diagnostics_failed(self, error: str) -> None:
         self.diagnostics_output.setPlainText(f"[FEHLER] Diagnose: {error}")
+        self._refresh_readiness()
 
     def _diagnostics_finished(self) -> None:
         self.test_button.setEnabled(True)
@@ -535,5 +616,11 @@ class SettingsWidget(QWidget):
         self.settings = settings
         self.store.save_settings(settings)
         self._refresh_preference_summary()
+        self._refresh_readiness()
         self.status.setText("Gespeichert. Lokale Backends werden jetzt neu konfiguriert.")
         self.settings_saved.emit(settings)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        self._refresh_compatibility_report()
+        self._refresh_readiness()
+        super().showEvent(event)
