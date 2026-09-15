@@ -10,6 +10,7 @@ from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.scene_mixer import ATMOSPHERES, COMPOSITIONS, LIGHTING, SETTINGS
 from app.ai.visual_motifs import default_visual_motifs
+from app.media.capabilities import WorkflowCapability, inspect_workflow_catalog, runnable_kinds
 from app.media.comfyui import ComfyUIClient, ComfyUIError, GeneratedMedia
 from app.media.coverage import VisualCoverageRepository
 from app.media.hardware import ComfyUIHardwareProbe, MediaHardwareBudget
@@ -48,7 +49,7 @@ class MediaResult:
 
 
 class MediaService:
-    """Coordinates local visual planning, render calculation, routing and generation."""
+    """Coordinates local visual planning, capability routing and generation."""
 
     def __init__(
         self,
@@ -67,19 +68,34 @@ class MediaService:
         self.hardware_probe = ComfyUIHardwareProbe(self.settings.media_url)
         self.coverage = VisualCoverageRepository(store) if store is not None else None
         self.workflow_profiles: list[WorkflowProfile] = []
+        self.workflow_capabilities: dict[str, WorkflowCapability] = {}
         if self.settings.profile_catalog_path is not None:
             try:
                 catalog = load_workflow_catalog(self.settings.profile_catalog_path)
                 self.workflow_profiles = catalog.profiles
+                self.workflow_capabilities = {
+                    item.profile_id: item for item in inspect_workflow_catalog(catalog)
+                }
             except (OSError, ValueError):
                 self.workflow_profiles = []
+                self.workflow_capabilities = {}
+
+    def _runnable_profiles(self) -> list[WorkflowProfile]:
+        if not self.workflow_profiles:
+            return []
+        return [
+            profile
+            for profile in self.workflow_profiles
+            if (capability := self.workflow_capabilities.get(profile.id)) is not None
+            and capability.runnable
+        ]
+
+    def _runnable_profile_kinds(self) -> set[str]:
+        return runnable_kinds(list(self.workflow_capabilities.values()))
 
     @property
     def enabled(self) -> bool:
-        has_profile = any(
-            profile.enabled and profile.workflow_path.exists()
-            for profile in self.workflow_profiles
-        )
+        has_profile = bool(self._runnable_profiles())
         return self.settings.media_enabled and (self.backend.enabled or has_profile)
 
     def close(self) -> None:
@@ -156,13 +172,20 @@ class MediaService:
         continuity_key: str | None,
         reference_path: Path | None,
     ) -> WorkflowProfile | None:
-        if not self.workflow_profiles:
+        profiles = self._runnable_profiles()
+        if not profiles:
             return None
+        reference_supported_ids = {
+            capability.profile_id
+            for capability in self.workflow_capabilities.values()
+            if capability.runnable and capability.reference_supported
+        }
         return choose_workflow_profile(
-            self.workflow_profiles,
+            profiles,
             kind=intent.kind,
             character_focus=bool(continuity_key),
             reference_available=reference_path is not None,
+            reference_supported_ids=reference_supported_ids,
         )
 
     @staticmethod
@@ -181,7 +204,11 @@ class MediaService:
         if self.coverage is None:
             return
         conversation_id = self._active_conversation_id()
-        tags = {item.strip().casefold() for item in preference_tags if item.strip()}
+        tags = {
+            item.strip().casefold()
+            for item in preference_tags
+            if item.strip() and not item.strip().casefold().startswith("avoid:")
+        }
 
         look = self._match_by_tags(default_look_presets(), tags)
         setting = self._match_by_tags(SETTINGS, tags)
@@ -200,8 +227,6 @@ class MediaService:
                 "composition": getattr(composition, "id", ""),
                 "atmosphere": getattr(atmosphere, "id", ""),
             }
-            # Coverage only needs component IDs; a tiny compatible object keeps the
-            # repository interface aligned with the real SceneMix model.
             from app.ai.scene_mixer import SceneMix
 
             scene_mix = SceneMix(
@@ -238,15 +263,13 @@ class MediaService:
         coverage_guidance = ""
         if self.coverage is not None:
             coverage_guidance = self.coverage.guidance(self._active_conversation_id())
-        available_profile_kinds = sorted(
-            {
-                kind
-                for profile in self.workflow_profiles
-                if profile.enabled and profile.workflow_path.exists()
-                for kind in profile.kinds
-            }
-        )
-        available_text = ", ".join(available_profile_kinds) if available_profile_kinds else "legacy workflow"
+
+        has_catalog = self.settings.profile_catalog_path is not None
+        available_profile_kinds = sorted(self._runnable_profile_kinds())
+        if has_catalog:
+            available_text = ", ".join(available_profile_kinds) if available_profile_kinds else "none"
+        else:
+            available_text = "legacy workflow (media kind is not declared)"
         motion_rule = (
             "Motion is locally reasonable for this hardware when it materially improves the moment."
             if hardware.motion_recommended
@@ -272,7 +295,8 @@ Return exactly one JSON object matching this schema:
 }}
 
 Decide whether a visual would genuinely improve this specific exchange. Prefer image unless motion materially improves the moment.
-Configured local workflow capabilities: {available_text}.
+Validated local workflow capabilities: {available_text}.
+If a profile catalog is configured, choose only a media kind listed as validated above.
 Local render hardware: {hardware.summary()}.
 {motion_rule}
 When generate is true, make concrete visual-direction choices instead of vague style prose: choose framing, camera angle, lighting, composition, wardrobe/material cues, and a restrained motion cue for GIF/video.
@@ -287,6 +311,7 @@ Do not include prose outside the JSON object."""
             f"Teasing: {persona.teasing.current:.2f}\n"
             f"Creativity: {persona.creativity.current:.2f}\n"
             f"Visual continuity enabled: {self.settings.continuity_enabled}\n"
+            f"Validated media kinds: {available_text}\n"
             f"Local hardware budget: {hardware.summary()}\n"
             f"Preference tags: {', '.join(tags[:24]) if tags else 'none'}\n"
             f"Historically liked visual cues: {', '.join(liked_cues) if liked_cues else 'none yet'}\n"
@@ -304,6 +329,29 @@ Do not include prose outside the JSON object."""
             intent = self.planner.from_model_payload(payload)
             if not self.settings.continuity_enabled and intent.continuity_key:
                 intent = intent.model_copy(update={"continuity_key": None})
+
+            if has_catalog and intent.generate and intent.kind not in available_profile_kinds:
+                explicit_motion = self._explicit_motion_request(user_text)
+                if "image" in available_profile_kinds and not explicit_motion:
+                    reason = intent.reason.strip()
+                    suffix = f"image selected because {intent.kind} has no validated local workflow"
+                    intent = intent.model_copy(
+                        update={
+                            "kind": "image",
+                            "motion": "",
+                            "reason": f"{reason}; {suffix}" if reason else suffix,
+                        }
+                    )
+                else:
+                    return intent.model_copy(
+                        update={
+                            "generate": False,
+                            "reason": (
+                                f"requested media kind {intent.kind!r} has no validated local workflow"
+                            ),
+                        }
+                    )
+
             if (
                 intent.kind != "image"
                 and not hardware.motion_recommended
@@ -379,11 +427,17 @@ Do not include prose outside the JSON object."""
             reference_path=reference_path,
         )
         if workflow_profile is not None and reference_path is not None:
-            if not workflow_profile.reference_configured:
+            capability = self.workflow_capabilities.get(workflow_profile.id)
+            if capability is None or not capability.reference_supported:
                 reference_path = None
         elif workflow_profile is None and reference_path is not None:
             if not self.backend.reference_configured:
                 reference_path = None
+
+        # With a configured catalog, a missing profile is a validated routing
+        # failure, not an invitation to queue the wrong legacy workflow.
+        if self.settings.profile_catalog_path is not None and workflow_profile is None:
+            return None
 
         render_plan = self.calculate_render_plan(
             intent,
@@ -412,6 +466,14 @@ Do not include prose outside the JSON object."""
             intent_payload = intent.model_dump(mode="json")
             if workflow_profile is not None:
                 intent_payload["workflow_profile"] = workflow_profile.id
+                capability = self.workflow_capabilities.get(workflow_profile.id)
+                if capability is not None:
+                    intent_payload["workflow_capabilities"] = {
+                        "runnable_kinds": list(capability.runnable_kinds),
+                        "reference_supported": capability.reference_supported,
+                        "render_controls": list(capability.render_controls),
+                        "output_evidence": list(capability.output_evidence),
+                    }
             intent_payload["render_plan"] = render_plan.model_dump(mode="json")
             intent_payload["render_parameters_applied"] = list(
                 generated.applied_render_parameters
