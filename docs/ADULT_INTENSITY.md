@@ -11,6 +11,16 @@ Each conversation stores two temporary 0–4 levels:
 
 For each axis the user chooses both the current level and an allowed maximum. The current level can also be locked so automatic session adaptation cannot move it.
 
+## Behavior curves
+
+The numeric levels are not only labels. Each current level maps to an explicit behavior direction included in the local system prompt.
+
+Sexuality progresses from non-sexual/flirt-oriented interaction through sensual and clearly erotic conversation to a highly intense adult tone. Higher levels explicitly tell the companion not to retreat into generic small talk merely because the current exchange is adult, and to take initiative proportional to the Persona's initiative setting.
+
+Kink intensity progresses from conventional interaction through experimentation to distinctly kink-forward and highly unconventional behavior. Higher levels may become more daring and provocative around themes the user explicitly asks for or lists as desired. A high kink level never authorizes the companion to invent a new taboo, fetish, permission, or boundary by itself.
+
+The current user message, explicit hard boundaries, configured maxima and locks remain authoritative at every level.
+
 ## Dynamic escalation
 
 Dynamic escalation is enabled by default. It reacts only to direct language in the current user message and changes the current conversation level by small bounded steps. It never changes the configured maximum, locks, Persona traits, Core Memory, adaptive memory, Character identity, or model weights.
