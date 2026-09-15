@@ -9,6 +9,7 @@ from app.ai.creative_director import CreativeDirectorConfig
 from app.ai.look_presets import LookPreset
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
+from app.ai.scene_evolution import ActiveRitual, ActiveSceneEvolution
 from app.ai.scene_mixer import SceneMix
 from app.ai.scene_presets import ScenePreset
 from app.ai.session_arcs import ActiveArc
@@ -41,6 +42,16 @@ class ContextSnapshot(BaseModel):
     session_mode: str | None
     scene_name: str | None
     scene_context: str
+    scene_evolution_name: str | None = None
+    scene_evolution_stage: str | None = None
+    scene_evolution_context: str = ""
+    scene_evolution_automatic: bool = False
+    scene_evolution_interval: int | None = None
+    ritual_name: str | None = None
+    ritual_step: str | None = None
+    ritual_context: str = ""
+    ritual_automatic: bool = False
+    ritual_interval: int | None = None
     variety_name: str | None = None
     variety_context: str = ""
     look_name: str | None = None
@@ -108,6 +119,8 @@ def build_context_snapshot(
     preference_tags: list[str],
     session_mode: SessionMode | None = None,
     scene_preset: ScenePreset | None = None,
+    scene_evolution: ActiveSceneEvolution | None = None,
+    active_ritual: ActiveRitual | None = None,
     variety_card: VarietyCard | None = None,
     look_preset: LookPreset | None = None,
     active_arc: ActiveArc | None = None,
@@ -139,6 +152,10 @@ def build_context_snapshot(
         tags.extend(session_mode.style_tags)
     if scene_preset is not None:
         tags.extend(scene_preset.style_tags)
+    if scene_evolution is not None:
+        tags.extend(scene_evolution.style_tags)
+    if active_ritual is not None:
+        tags.extend(active_ritual.style_tags)
     if variety_card is not None:
         tags.extend(variety_card.style_tags)
     if look_preset is not None:
@@ -160,6 +177,11 @@ def build_context_snapshot(
     scene_context = ""
     if scene_preset is not None:
         scene_context = f"{scene_preset.name}: {scene_preset.context}"
+
+    scene_evolution_context = (
+        scene_evolution.prompt_text() if scene_evolution is not None else ""
+    )
+    ritual_context = active_ritual.prompt_text() if active_ritual is not None else ""
 
     variety_context = ""
     if variety_card is not None:
@@ -197,6 +219,8 @@ def build_context_snapshot(
         anti_repetition_context,
         session_moment_context,
         twist_context,
+        scene_evolution_context,
+        ritual_context,
     )
 
     conversation_id: str | None = None
@@ -284,6 +308,16 @@ def build_context_snapshot(
         session_mode=session_mode.name if session_mode is not None else None,
         scene_name=scene_preset.name if scene_preset is not None else None,
         scene_context=scene_context,
+        scene_evolution_name=scene_evolution.plan_name if scene_evolution is not None else None,
+        scene_evolution_stage=scene_evolution.stage_name if scene_evolution is not None else None,
+        scene_evolution_context=scene_evolution_context,
+        scene_evolution_automatic=bool(scene_evolution and scene_evolution.automatic),
+        scene_evolution_interval=scene_evolution.interval if scene_evolution is not None else None,
+        ritual_name=active_ritual.ritual_name if active_ritual is not None else None,
+        ritual_step=active_ritual.step_name if active_ritual is not None else None,
+        ritual_context=ritual_context,
+        ritual_automatic=bool(active_ritual and active_ritual.automatic),
+        ritual_interval=active_ritual.interval if active_ritual is not None else None,
         variety_name=variety_card.name if variety_card is not None else None,
         variety_context=variety_context,
         look_name=look_preset.name if look_preset is not None else None,
