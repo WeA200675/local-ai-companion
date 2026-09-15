@@ -24,7 +24,7 @@ _IMAGE_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 class MediaHistoryWidget(QWidget):
-    """Local history, feedback, workflow trace, character reference, and coverage UI."""
+    """Local history, feedback, render trace, character reference, and coverage UI."""
 
     feedback_changed = Signal()
     reference_changed = Signal()
@@ -48,7 +48,7 @@ class MediaHistoryWidget(QWidget):
         self.meta = QLabel("Noch kein Medium ausgewählt")
         self.meta.setWordWrap(True)
         self.feedback_note = QLabel(
-            "Bildbewertungen lernen Stilpräferenzen. Ein festes Referenzbild kann zusätzlich die visuelle Identität derselben Figur stabilisieren."
+            "Bildbewertungen lernen Stilpräferenzen. Die Medienhistorie zeigt zusätzlich die lokale Gestaltung und Render-Berechnung, damit nachvollziehbar bleibt, was an ComfyUI übergeben wurde."
         )
         self.feedback_note.setWordWrap(True)
 
@@ -94,7 +94,7 @@ class MediaHistoryWidget(QWidget):
             self._active_conversation_id(),
         )
         tabs = QTabWidget()
-        tabs.addTab(history_page, "Historie & Feedback")
+        tabs.addTab(history_page, "Historie & Render")
         tabs.addTab(self.coverage_widget, "Visual Coverage")
 
         layout = QVBoxLayout(self)
@@ -175,6 +175,42 @@ class MediaHistoryWidget(QWidget):
         value = item.data(Qt.ItemDataRole.UserRole)
         return int(value) if value is not None else None
 
+    @staticmethod
+    def _render_summary(intent: dict[str, object]) -> tuple[str, str]:
+        render = intent.get("render_plan")
+        if not isinstance(render, dict):
+            return "Render-Berechnung: ältere Historie / nicht vorhanden", ""
+
+        width = render.get("width", "?")
+        height = render.get("height", "?")
+        aspect = render.get("aspect_ratio", "?")
+        steps = render.get("steps", "?")
+        cfg = render.get("cfg", "?")
+        denoise = render.get("denoise", "?")
+        quality = render.get("quality", "?")
+        work = render.get("estimated_work_units", "?")
+        kind = render.get("kind", "image")
+        motion = ""
+        if kind != "image":
+            motion = (
+                f" · {render.get('frames', '?')} Frames @ {render.get('fps', '?')} fps"
+                f" (~{render.get('duration_seconds', '?')} s)"
+            )
+        target = (
+            f"Render-Ziel: {width}×{height} · {aspect} · {quality} · {steps} Steps · "
+            f"CFG {cfg} · Denoise {denoise}{motion} · Work ~{work}"
+        )
+
+        applied = intent.get("render_parameters_applied")
+        if isinstance(applied, list) and applied:
+            applied_text = "ComfyUI gesetzt: " + ", ".join(str(item) for item in applied)
+        else:
+            applied_text = (
+                "ComfyUI gesetzt: keine automatisch erkannten numerischen Eingänge; "
+                "der Workflow behält für diese Werte seine eigenen Defaults."
+            )
+        return target, applied_text
+
     def _selection_changed(self, current: QListWidgetItem | None, _previous) -> None:
         if current is None:
             self.pin_reference.setEnabled(False)
@@ -187,6 +223,9 @@ class MediaHistoryWidget(QWidget):
         intent = event.get("intent") or {}
         description = ""
         workflow_profile = "standard"
+        render_summary = ""
+        applied_summary = ""
+        direction_summary = ""
         if isinstance(intent, dict):
             description = " · ".join(
                 str(intent.get(key, "")).strip()
@@ -194,16 +233,28 @@ class MediaHistoryWidget(QWidget):
                 if str(intent.get(key, "")).strip()
             )
             workflow_profile = str(intent.get("workflow_profile") or "standard")
+            direction_parts = [
+                str(intent.get("framing") or "").strip(),
+                str(intent.get("camera_angle") or "").strip(),
+                str(intent.get("lighting") or "").strip(),
+                str(intent.get("composition") or "").strip(),
+            ]
+            direction_summary = " · ".join(item for item in direction_parts if item)
+            render_summary, applied_summary = self._render_summary(intent)
         self.preview.show_media(str(event["path"]), description=description)
         continuity_key = str(event.get("continuity_key") or "")
         is_reference = self._reference_ids.get(continuity_key) == media_id
-        self.meta.setText(
-            f"ID #{media_id} · Seed {event['seed']} · "
-            f"Workflow {workflow_profile} · "
-            f"Continuity {continuity_key or 'aus'} · "
-            f"Bewertung {event.get('feedback') or 'keine'} · "
-            f"Referenz {'fest' if is_reference else 'nein'}"
-        )
+        meta_lines = [
+            f"ID #{media_id} · Seed {event['seed']} · Workflow {workflow_profile}",
+            f"Continuity {continuity_key or 'aus'} · Bewertung {event.get('feedback') or 'keine'} · Referenz {'fest' if is_reference else 'nein'}",
+        ]
+        if direction_summary:
+            meta_lines.append(f"Gestaltung: {direction_summary}")
+        if render_summary:
+            meta_lines.append(render_summary)
+        if applied_summary:
+            meta_lines.append(applied_summary)
+        self.meta.setText("\n".join(meta_lines))
 
         path = Path(str(event.get("path") or "")).expanduser()
         usable_image = (
