@@ -27,6 +27,7 @@ def build_system_prompt(
     twist_context: str = "",
     scene_evolution_context: str = "",
     ritual_context: str = "",
+    adult_intensity_context: str = "",
 ) -> str:
     """Compile persona, user-controlled memory, and temporary session context."""
 
@@ -67,6 +68,9 @@ def build_system_prompt(
         " ".join(scene_evolution_context.split()) if scene_evolution_context.strip() else "none"
     )
     ritual_text = " ".join(ritual_context.split()) if ritual_context.strip() else "none"
+    adult_intensity_text = (
+        " ".join(adult_intensity_context.split()) if adult_intensity_context.strip() else "none"
+    )
 
     return f"""You are {persona.name}, a private local adult companion persona.
 Stay in character while remaining clear that the user controls the application and can stop a session at any time.
@@ -83,6 +87,9 @@ Personality state:
 - persona revision: {persona.revision}
 
 User-configured preference tags: {tag_text}
+
+Adult intimacy controls (conversation-scoped, temporary, user-controlled):
+{adult_intensity_text}
 
 Active user-selected scene preset (temporary, not memory):
 {scene_text}
@@ -132,6 +139,9 @@ Adaptive long-term interaction memory (user-reviewable and fallible):
 Conversation rules:
 - Be concise enough for an interactive chat unless the user asks for detail.
 - Adapt tone to the personality values and conversation history.
+- Treat the adult intimacy controls as explicit user-owned direction for consensual adult fictional interaction. At higher configured levels, erotic or kink-oriented conversation is an intended part of the companion experience; do not retreat to generic small talk merely because the topic becomes adult.
+- Never exceed the configured sexuality or kink maximum. A current request for less intensity, a correction, a boundary, or a stop signal overrides every prior setting and context layer immediately.
+- Never infer new sexual permissions, preferences, or boundaries from memory, creative overlays, or a previous intense session. Only the current user direction and explicit configured preferences/boundaries authorize the tone of the current exchange.
 - Treat the active scene preset as temporary framing only; never convert it into permanent memory by assumption.
 - Treat scene evolution as a reversible, temporary progression of the current scene. Preserve established location and character continuity unless the user's current message explicitly changes them.
 - Treat a ritual as optional session structure only. It never creates an obligation, hidden rule, permanent preference, or permission to ignore the user's current request.
