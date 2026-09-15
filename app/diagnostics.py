@@ -63,6 +63,30 @@ def _load_json_object(path: Path) -> tuple[dict[str, object] | None, str | None]
     return payload, None
 
 
+def _validate_prompt_seed_mapping(
+    payload: dict[str, object],
+    positive_node: str,
+    negative_node: str,
+    seed_node: str,
+) -> str | None:
+    for label, node_id in (
+        ("Positive Prompt", positive_node),
+        ("Negative Prompt", negative_node),
+    ):
+        node = payload.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if not isinstance(inputs, dict) or not any(key in inputs for key in ("text", "prompt")):
+            return f"{label} Node {node_id} hat keinen text/prompt-Input"
+
+    seed = payload.get(seed_node)
+    seed_inputs = seed.get("inputs") if isinstance(seed, dict) else None
+    if not isinstance(seed_inputs, dict) or not any(
+        key in seed_inputs for key in ("seed", "noise_seed")
+    ):
+        return f"Seed Node {seed_node} hat keinen seed/noise_seed-Input"
+    return None
+
+
 def _validate_profile(profile: WorkflowProfile) -> str | None:
     payload, error = _load_json_object(profile.workflow_path)
     if error is not None or payload is None:
@@ -75,6 +99,15 @@ def _validate_profile(profile: WorkflowProfile) -> str | None:
     ]
     if missing:
         return f"{profile.id}: Node-IDs fehlen: {', '.join(missing)}"
+
+    mapping_error = _validate_prompt_seed_mapping(
+        payload,
+        profile.positive_node,
+        profile.negative_node,
+        profile.seed_node,
+    )
+    if mapping_error:
+        return f"{profile.id}: {mapping_error}"
 
     if profile.reference_configured:
         node = payload.get(profile.reference_node)
@@ -142,6 +175,15 @@ def _check_legacy_workflow(settings: AppSettings) -> DiagnosticResult:
             False,
             f"Konfigurierte Node-IDs fehlen: {', '.join(missing)}",
         )
+
+    mapping_error = _validate_prompt_seed_mapping(
+        payload,
+        settings.media_positive_node,
+        settings.media_negative_node,
+        settings.media_seed_node,
+    )
+    if mapping_error:
+        return DiagnosticResult("ComfyUI-Workflow", False, mapping_error)
 
     if settings.media_reference_enabled:
         node_id = settings.media_reference_node.strip()
