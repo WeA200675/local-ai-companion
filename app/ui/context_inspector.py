@@ -120,6 +120,7 @@ class ContextInspectorWidget(QWidget):
             session_moment=self.chat.session_moment,
             twist_card=self.chat.twist_card,
             scenario_seed=self.chat.scenario_seed,
+            adult_intensity=getattr(self.chat, "adult_intensity", None),
             twist_auto_enabled=twist_auto_enabled,
             twist_interval=twist_interval,
             anti_repetition_context=anti_repetition_context,
@@ -172,6 +173,9 @@ class ContextInspectorWidget(QWidget):
             scenario = (
                 f"{snapshot.scenario_seed_name} · Kompatibilität {score}% · Medien {media} · RNG {seed}"
             )
+        sexuality_lock = " 🔒" if snapshot.sexuality_locked else ""
+        kink_lock = " 🔒" if snapshot.kink_locked else ""
+        adult_dynamic = "an" if snapshot.adult_dynamic_escalation else "aus"
 
         lines = [
             f"Modell: {snapshot.model_name}",
@@ -181,6 +185,13 @@ class ContextInspectorWidget(QWidget):
             f"Antwortbudget: {response_budget}",
             f"Geschätzter Input: ~{snapshot.approx_input_tokens} Token",
             f"Geschätzter Rest nach reserviertem Antwortbudget: {remaining}",
+            "",
+            "Intimität — aktuelle Session:",
+            f"  Sexualität: {snapshot.sexuality_label} ({snapshot.sexuality_current}/4, max {snapshot.sexuality_max}/4){sexuality_lock}",
+            f"  Kink/Perversitätsintensität: {snapshot.kink_label} ({snapshot.kink_current}/4, max {snapshot.kink_max}/4){kink_lock}",
+            f"  Dynamische Steigerung: {adult_dynamic}",
+            f"  Erwünschte Kinks/Themen: {', '.join(snapshot.adult_preferences) or 'keine explizit gesetzt'}",
+            f"  Harte Grenzen: {', '.join(snapshot.adult_boundaries) or 'keine explizit gesetzt'}",
             "",
             f"Session-Modus: {snapshot.session_mode or 'Basis'}",
             f"Szene: {snapshot.scene_name or 'Basis'}",
@@ -224,6 +235,8 @@ class ContextInspectorWidget(QWidget):
                 *[f"  • {item}" for item in snapshot.adaptive_memory],
             ]
         )
+        if snapshot.adult_intensity_context:
+            lines.extend(["", "Temporärer Intimitätskontext:", f"  {snapshot.adult_intensity_context}"])
         if snapshot.scene_context:
             lines.extend(["", "Temporärer Szenenkontext:", f"  {snapshot.scene_context}"])
         if snapshot.scene_evolution_context:
