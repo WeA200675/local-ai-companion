@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.media.hardware import MediaHardwareBudget
 from app.media.planner import MediaIntent
 
 RenderQuality = Literal["draft", "balanced", "high"]
@@ -26,15 +27,21 @@ class MediaRenderPlan(BaseModel):
     duration_seconds: float = Field(default=0.0, ge=0.0, le=120.0)
     megapixels: float = Field(ge=0.01, le=32.0)
     estimated_work_units: float = Field(ge=0.0)
+    hardware_tier: str = "unknown"
+    hardware_device: str = "unknown"
+    hardware_vram_free_gb: float | None = None
     rationale: list[str] = Field(default_factory=list)
 
     def prompt_text(self) -> str:
         motion = ""
         if self.kind != "image":
             motion = f", {self.frames} frames at {self.fps} fps (~{self.duration_seconds:.1f}s)"
+        hardware = f", hardware {self.hardware_tier}"
+        if self.hardware_vram_free_gb is not None:
+            hardware += f" ({self.hardware_vram_free_gb:.1f} GB free VRAM)"
         return (
             f"{self.width}x{self.height} ({self.aspect_ratio}), {self.steps} steps, "
-            f"CFG {self.cfg:.1f}, denoise {self.denoise:.2f}{motion}; "
+            f"CFG {self.cfg:.1f}, denoise {self.denoise:.2f}{motion}{hardware}; "
             f"estimated work {self.estimated_work_units:.1f} units"
         )
 
@@ -42,9 +49,10 @@ class MediaRenderPlan(BaseModel):
 class MediaRenderCalculator:
     """Compute practical local render parameters from visual intent.
 
-    The calculator is deliberately deterministic and model/backend neutral. It
-    gives ComfyUI a useful target without assuming a specific checkpoint,
-    sampler, scheduler, GPU or proprietary runtime.
+    The calculator is deterministic and backend neutral. When ComfyUI reports a
+    hardware budget, that budget acts as a ceiling: it may reduce quality,
+    spatial size or motion frames, but never silently raises a workflow's chosen
+    quality beyond what the profile requested.
     """
 
     _QUALITY_BASE = {
@@ -52,10 +60,15 @@ class MediaRenderCalculator:
         "balanced": (896, 28, 5.8),
         "high": (1088, 38, 6.4),
     }
+    _QUALITY_RANK = {"draft": 0, "balanced": 1, "high": 2}
 
     @staticmethod
     def _clean_tags(preference_tags: list[str]) -> set[str]:
-        return {" ".join(item.split()).casefold() for item in preference_tags if item.strip()}
+        return {
+            " ".join(item.split()).casefold()
+            for item in preference_tags
+            if item.strip() and not item.strip().casefold().startswith("avoid:")
+        }
 
     @staticmethod
     def _aspect(intent: MediaIntent, tags: set[str]) -> tuple[int, int, str, str]:
@@ -100,6 +113,18 @@ class MediaRenderCalculator:
     def _round64(value: float) -> int:
         return max(256, int(round(value / 64.0)) * 64)
 
+    @classmethod
+    def _effective_quality(
+        cls,
+        requested: RenderQuality,
+        hardware: MediaHardwareBudget | None,
+    ) -> RenderQuality:
+        if hardware is None:
+            return requested
+        if cls._QUALITY_RANK[requested] <= cls._QUALITY_RANK[hardware.max_quality]:
+            return requested
+        return hardware.max_quality
+
     def calculate(
         self,
         intent: MediaIntent,
@@ -107,9 +132,11 @@ class MediaRenderCalculator:
         *,
         quality: RenderQuality = "balanced",
         max_megapixels: float | None = None,
+        hardware_budget: MediaHardwareBudget | None = None,
     ) -> MediaRenderPlan:
         tags = self._clean_tags(preference_tags or [])
-        base_long, base_steps, base_cfg = self._QUALITY_BASE[quality]
+        effective_quality = self._effective_quality(quality, hardware_budget)
+        base_long, base_steps, base_cfg = self._QUALITY_BASE[effective_quality]
         ratio_w, ratio_h, ratio_label, ratio_reason = self._aspect(intent, tags)
 
         # Motion costs multiply quickly; reduce the spatial target before frame
@@ -126,7 +153,15 @@ class MediaRenderCalculator:
             width = self._round64(long_edge * ratio_w / ratio_h)
 
         default_cap = 1.20 if intent.kind == "image" else 0.72
-        cap = max(0.20, min(8.0, float(max_megapixels or default_cap)))
+        requested_cap = max(0.20, min(8.0, float(max_megapixels or default_cap)))
+        hardware_cap = default_cap
+        if hardware_budget is not None:
+            hardware_cap = (
+                hardware_budget.image_megapixel_cap
+                if intent.kind == "image"
+                else hardware_budget.motion_megapixel_cap
+            )
+        cap = min(requested_cap, hardware_cap)
         current_mp = width * height / 1_000_000
         if current_mp > cap:
             scale = sqrt(cap / current_mp)
@@ -142,12 +177,22 @@ class MediaRenderCalculator:
         frames = 1
         fps = 1
         duration = 0.0
-        rationale = [ratio_reason, f"{quality} quality target"]
+        rationale = [ratio_reason, f"{effective_quality} quality target"]
+        if effective_quality != quality:
+            rationale.append(
+                f"quality reduced from {quality} by {hardware_budget.tier if hardware_budget else 'hardware'} budget"
+            )
         if intent.kind != "image":
             # 2–4 seconds is long enough for a loop/reaction while keeping local
             # inference bounded. Higher intensity buys motion, not unlimited size.
             duration = 2.0 + intensity * 2.0
-            fps = 12 if quality == "draft" else 16 if quality == "balanced" else 18
+            fps = (
+                12
+                if effective_quality == "draft"
+                else 16
+                if effective_quality == "balanced"
+                else 18
+            )
             frames = max(16, int(round(duration * fps / 4.0)) * 4)
             duration = frames / fps
             steps = max(12, steps - 5)
@@ -160,15 +205,24 @@ class MediaRenderCalculator:
             else:
                 rationale.append("motion duration derived from intensity")
 
+            if hardware_budget is not None and frames > hardware_budget.max_motion_frames:
+                frames = max(16, (hardware_budget.max_motion_frames // 4) * 4)
+                duration = frames / fps
+                rationale.append(
+                    f"motion capped at {frames} frames by {hardware_budget.tier} hardware budget"
+                )
+
         megapixels = width * height / 1_000_000
         frame_factor = 1.0 if intent.kind == "image" else max(1.0, frames / 8.0)
         work = megapixels * steps * frame_factor
         rationale.append(f"spatial cap {cap:.2f} MP")
+        if hardware_budget is not None:
+            rationale.append(f"hardware: {hardware_budget.summary()}")
         rationale.append("work estimate = megapixels × steps × motion factor")
 
         return MediaRenderPlan(
             kind=intent.kind,
-            quality=quality,
+            quality=effective_quality,
             width=width,
             height=height,
             aspect_ratio=ratio_label,
@@ -180,5 +234,10 @@ class MediaRenderCalculator:
             duration_seconds=round(duration, 2),
             megapixels=round(megapixels, 3),
             estimated_work_units=round(work, 2),
+            hardware_tier=hardware_budget.tier if hardware_budget is not None else "unknown",
+            hardware_device=hardware_budget.device_name if hardware_budget is not None else "unknown",
+            hardware_vram_free_gb=(
+                hardware_budget.vram_free_gb if hardware_budget is not None else None
+            ),
             rationale=rationale,
         )
