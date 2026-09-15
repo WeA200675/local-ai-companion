@@ -12,6 +12,12 @@ from app.ai.creative_accents import (
 from app.ai.creative_director import CreativeDirector
 from app.ai.look_presets import LookPreset, LookPresetRepository
 from app.ai.prompting import build_system_prompt
+from app.ai.scene_evolution import (
+    ActiveRitual,
+    ActiveSceneEvolution,
+    RitualRepository,
+    SceneEvolutionRepository,
+)
 from app.ai.scene_mixer import SceneMix, SceneMixerRepository
 from app.ai.scene_presets import ScenePreset
 from app.ai.session_arcs import ActiveArc, SessionArcRepository
@@ -55,6 +61,10 @@ class ModeAwareChatWidget(ChatWidget):
         session_moment: SessionMoment | None = None,
         twist_repository: TwistDeckRepository | None = None,
         twist_card: TwistCard | None = None,
+        evolution_repository: SceneEvolutionRepository | None = None,
+        scene_evolution: ActiveSceneEvolution | None = None,
+        ritual_repository: RitualRepository | None = None,
+        active_ritual: ActiveRitual | None = None,
         creative_director: CreativeDirector | None = None,
         **kwargs,
     ) -> None:
@@ -80,6 +90,10 @@ class ModeAwareChatWidget(ChatWidget):
         self.session_moment = session_moment
         self.twist_repository = twist_repository
         self.twist_card = twist_card
+        self.evolution_repository = evolution_repository
+        self.scene_evolution = scene_evolution
+        self.ritual_repository = ritual_repository
+        self.active_ritual = active_ritual
         self.creative_director = creative_director
         super().__init__(*args, **kwargs)
         self.core_memory = CoreMemoryRepository(self.store)
@@ -163,6 +177,20 @@ class ModeAwareChatWidget(ChatWidget):
         else:
             self.status.setText(f"Twist für nächste Antwort: {card.name}")
 
+    def set_scene_evolution(self, active: ActiveSceneEvolution | None) -> None:
+        self.scene_evolution = active.model_copy(deep=True) if active is not None else None
+        if active is None:
+            self.status.setText("Scene Evolution: aus")
+        else:
+            self.status.setText(f"Evolution: {active.plan_name} · {active.stage_name}")
+
+    def set_active_ritual(self, active: ActiveRitual | None) -> None:
+        self.active_ritual = active.model_copy(deep=True) if active is not None else None
+        if active is None:
+            self.status.setText("Ritual: aus")
+        else:
+            self.status.setText(f"Ritual: {active.ritual_name} · {active.step_name}")
+
     def refresh_creative_overlays(self) -> None:
         if self.conversations is None:
             return
@@ -185,6 +213,10 @@ class ModeAwareChatWidget(ChatWidget):
             self.session_moment = self.moment_repository.active(conversation_id)
         if self.twist_repository is not None:
             self.twist_card = self.twist_repository.active(conversation_id)
+        if self.evolution_repository is not None:
+            self.scene_evolution = self.evolution_repository.active(conversation_id)
+        if self.ritual_repository is not None:
+            self.active_ritual = self.ritual_repository.active(conversation_id)
 
     def set_conversation(self, conversation_id: str) -> None:
         if self.conversations is None:
@@ -217,6 +249,10 @@ class ModeAwareChatWidget(ChatWidget):
             tags = self.session_mode.merged_tags(self.preference_tags)
         if self.scene_preset is not None:
             tags.extend(self.scene_preset.style_tags)
+        if self.scene_evolution is not None:
+            tags.extend(self.scene_evolution.style_tags)
+        if self.active_ritual is not None:
+            tags.extend(self.active_ritual.style_tags)
         if self.variety_card is not None:
             tags.extend(self.variety_card.style_tags)
         if self.look_preset is not None:
@@ -294,6 +330,16 @@ class ModeAwareChatWidget(ChatWidget):
             return ""
         return self.twist_card.prompt_text()
 
+    def _scene_evolution_context(self) -> str:
+        if self.scene_evolution is None:
+            return ""
+        return self.scene_evolution.prompt_text()
+
+    def _ritual_context(self) -> str:
+        if self.active_ritual is None:
+            return ""
+        return self.active_ritual.prompt_text()
+
     def _creative_signature(self) -> str:
         parts = [
             f"look:{self.look_preset.id if self.look_preset else 'base'}",
@@ -308,6 +354,16 @@ class ModeAwareChatWidget(ChatWidget):
             f"mood:{self.mood_grade.id if self.mood_grade else 'base'}",
             f"detail:{self.detail_accent.id if self.detail_accent else 'base'}",
             f"twist:{self.twist_card.id if self.twist_card else 'none'}",
+            (
+                f"evolution:{self.scene_evolution.plan_id}:{self.scene_evolution.stage_index}"
+                if self.scene_evolution is not None
+                else "evolution:none"
+            ),
+            (
+                f"ritual:{self.active_ritual.ritual_id}:{self.active_ritual.step_index}"
+                if self.active_ritual is not None
+                else "ritual:none"
+            ),
         ]
         return "|".join(parts)
 
@@ -342,11 +398,13 @@ class ModeAwareChatWidget(ChatWidget):
             self._anti_repetition_context(),
             self._session_moment_context(),
             self._twist_context(),
+            self._scene_evolution_context(),
+            self._ritual_context(),
         )
 
     def _model_completed(self, reply: str) -> None:
         # Finish the response and media planning with the exact context that produced it.
-        # One-shot twists and automatic rotations below only affect later turns.
+        # One-shot twists and automatic rotations/progressions below only affect later turns.
         used_signature = self._creative_signature()
         used_twist = self.twist_card.model_copy(deep=True) if self.twist_card is not None else None
         super()._model_completed(reply)
@@ -360,13 +418,14 @@ class ModeAwareChatWidget(ChatWidget):
             )
 
         changed_labels: list[str] = []
+        assistant_count = self.store.assistant_message_count()
         if conversation_id and self.twist_repository is not None:
             if used_twist is not None:
                 self.twist_repository.clear(conversation_id)
                 self.twist_card = None
             scheduled = self.twist_repository.maybe_schedule(
                 conversation_id,
-                assistant_count=self.store.assistant_message_count(),
+                assistant_count=assistant_count,
             )
             if scheduled is not None:
                 self.twist_card = scheduled
@@ -374,10 +433,36 @@ class ModeAwareChatWidget(ChatWidget):
             elif used_twist is not None:
                 changed_labels.append("Twist verbraucht")
 
+        if conversation_id and self.evolution_repository is not None:
+            before = self.evolution_repository.active(conversation_id)
+            advanced = self.evolution_repository.maybe_advance(
+                conversation_id,
+                assistant_count=assistant_count,
+            )
+            after = self.evolution_repository.active(conversation_id)
+            self.scene_evolution = after
+            if advanced is not None:
+                changed_labels.append(f"Evolution: {advanced.stage_name}")
+            elif before is not None and before.automatic and after is not None and not after.automatic:
+                changed_labels.append(f"Evolution hält: {after.stage_name}")
+
+        if conversation_id and self.ritual_repository is not None:
+            before = self.ritual_repository.active(conversation_id)
+            advanced = self.ritual_repository.maybe_advance(
+                conversation_id,
+                assistant_count=assistant_count,
+            )
+            after = self.ritual_repository.active(conversation_id)
+            self.active_ritual = after
+            if advanced is not None:
+                changed_labels.append(f"Ritual: {advanced.step_name}")
+            elif before is not None and before.automatic and after is None:
+                changed_labels.append("Ritual abgeschlossen")
+
         if self.creative_director is not None and conversation_id is not None:
             result = self.creative_director.maybe_rotate(
                 conversation_id,
-                assistant_count=self.store.assistant_message_count(),
+                assistant_count=assistant_count,
             )
             if result is not None and result.changed_anything:
                 self.refresh_creative_overlays()
@@ -406,6 +491,12 @@ class ModeAwareChatWidget(ChatWidget):
         scene_context = self._scene_context()
         if scene_context:
             planner_parts.append(f"Active user-selected scene: {scene_context}")
+        evolution_context = self._scene_evolution_context()
+        if evolution_context:
+            planner_parts.append(f"Temporary scene evolution stage: {evolution_context}")
+        ritual_context = self._ritual_context()
+        if ritual_context:
+            planner_parts.append(f"Temporary ritual step: {ritual_context}")
         variety_context = self._variety_context()
         if variety_context:
             planner_parts.append(f"Temporary variety spark: {variety_context}")
