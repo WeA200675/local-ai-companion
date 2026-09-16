@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Callable, Iterable
 
-from app.ai.model_catalog import installed_catalog_models
+from app.ai.model_catalog import installed_catalog_models, strict_open_source_models
 from app.diagnostics import DiagnosticResult, run_diagnostics
 from app.settings import AppSettings
 from app.setup_flow import core_setup_status
@@ -65,11 +65,7 @@ def recommended_install_commands(
 
     installed = {name.strip().casefold() for name in installed_models}
     catalog = sorted(
-        installed_catalog_models(
-            [model.ollama_model for model in __import__(
-                "app.ai.model_catalog", fromlist=["strict_open_source_models"]
-            ).strict_open_source_models()]
-        ),
+        strict_open_source_models(),
         key=lambda model: (
             _parameter_weight(model.parameter_size),
             model.ollama_model.casefold(),
