@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.ai.model_recovery import recovery_candidates, recover_first_working_model
+from app.ai.model_recovery import (\n    recommended_install_commands,\n    recovery_candidates,\n    recover_first_working_model,\n)
 from app.diagnostics import DiagnosticResult
 from app.settings import AppSettings
 
@@ -52,3 +52,12 @@ def test_recovery_does_not_download_or_probe_unknown_models() -> None:
     assert report.selected_model is None
     assert report.attempts == ()
     assert tested == []
+
+
+def test_install_suggestions_are_small_explicit_catalog_commands() -> None:
+    commands = recommended_install_commands(["qwen2.5:0.5b"], limit=3)
+
+    assert len(commands) == 3
+    assert commands[0] == "ollama pull deepseek-r1:1.5b"
+    assert "ollama pull qwen2.5:0.5b" not in commands
+    assert all(command.startswith("ollama pull ") for command in commands)
