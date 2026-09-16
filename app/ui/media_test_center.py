@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLabel, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
 from app.media.service import MediaService
@@ -7,6 +8,8 @@ from app.media.test_center import build_media_test_report
 
 
 class MediaTestCenterWidget(QWidget):
+    setup_requested = Signal()
+
     """Read-only local diagnostics for the complete configured media route."""
 
     def __init__(self, service: MediaService, parent: QWidget | None = None) -> None:
@@ -24,13 +27,16 @@ class MediaTestCenterWidget(QWidget):
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.refresh_button = QPushButton("Prüfung aktualisieren")
+        self.setup_button = QPushButton("Medien automatisch einrichten")
         self.refresh_button.clicked.connect(self.refresh)
+        self.setup_button.clicked.connect(self.setup_requested.emit)
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addWidget(explanation)
         layout.addWidget(self.output, 1)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.setup_button)
         self.refresh()
 
     def set_service(self, service: MediaService) -> None:
