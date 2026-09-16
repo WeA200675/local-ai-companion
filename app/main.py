@@ -45,6 +45,7 @@ from app.ui.conversations import ConversationsWidget
 from app.ui.creative_accents import CreativeAccentsPanel
 from app.ui.creative_variety import CreativeVarietyWidget
 from app.ui.media_history import MediaHistoryWidget
+from app.ui.media_test_center import MediaTestCenterWidget
 from app.ui.memory_lab import MemoryLab
 from app.ui.navigation import SidebarNavigation
 from app.ui.persona_lab import PersonaLab
@@ -235,6 +236,7 @@ class MainWindow(QMainWindow):
             self.store,
             limit=self.settings.media_history_limit,
         )
+        self.media_test_center = MediaTestCenterWidget(self.media_service)
         self.settings_widget = SettingsWidget(self.store, self.settings)
         self.privacy_settings = PrivacySettingsWidget(self.store)
         self.backup_widget = BackupWidget()
@@ -336,6 +338,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.memory_lab, "Memory")
         self.tabs.addTab(self.character_studio, "Character Studio")
         self.tabs.addTab(self.media_history, "Medien")
+        self.tabs.addTab(self.media_test_center, "Medien-Test")
         self.tabs.addTab(self.settings_widget, "Einstellungen")
         self.tabs.addTab(self.privacy_settings, "Privatsphäre")
         self.tabs.addTab(self.backup_widget, "Backup")
@@ -464,6 +467,7 @@ class MainWindow(QMainWindow):
 
         self.model = new_model
         self.media_service = new_media_service
+        self.media_test_center.set_service(new_media_service)
         old_media_service.close()
         old_model.close()
         self.context_inspector.refresh()
