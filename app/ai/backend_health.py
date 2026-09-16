@@ -98,6 +98,26 @@ def classify_ollama_failure(
                 next_step=f"Prüfe `ollama list` und installiere/auswähle das gewünschte lokale Modell {model_name!r}.",
                 technical_detail=body,
             )
+        native_crash_tokens = (
+            "0xc0000005",
+            "access violation",
+            "llama-server process has terminated",
+            "segmentation fault",
+            "signal: aborted",
+        )
+        if status >= 500 and any(token in body_folded for token in native_crash_tokens):
+            return OllamaFailure(
+                code="native_backend_crash",
+                summary=(
+                    f"Ollama ist erreichbar, aber der native Modellprozess für {model_name!r} ist abgestürzt."
+                ),
+                next_step=(
+                    "Nutze in der Ersteinrichtung „Funktionierendes Ersatzmodell suchen“. "
+                    f"Teste zur Abgrenzung außerdem `ollama run {model_name} \"Hallo\"`; "
+                    "wenn auch das abstürzt, prüfe Ollama-Version, Grafiktreiber und verfügbaren RAM/VRAM."
+                ),
+                technical_detail=body,
+            )
         if status >= 500:
             return OllamaFailure(
                 code="backend_failure",
