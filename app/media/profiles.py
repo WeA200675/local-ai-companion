@@ -160,8 +160,12 @@ def load_workflow_catalog(path: str | Path | None) -> WorkflowCatalog:
     if isinstance(payload, list):
         payload = {"version": 1, "profiles": payload}
     catalog = WorkflowCatalog.model_validate(payload)
+    from app.media.motion_profiles import with_detected_motion_profile
+
     resolved = [
-        profile.resolve_relative_to(catalog_path.parent).with_detected_reference_mapping()
+        with_detected_motion_profile(
+            profile.resolve_relative_to(catalog_path.parent).with_detected_reference_mapping()
+        )
         for profile in catalog.profiles
     ]
     return catalog.model_copy(update={"profiles": resolved})
