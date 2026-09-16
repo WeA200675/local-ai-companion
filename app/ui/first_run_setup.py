@@ -15,6 +15,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.ai.model import OllamaClient
+from app.ai.model_recovery import (
+    ModelRecoveryReport,
+    recover_first_working_model,
+    recovery_candidates,
+)
 from app.ai.model_compatibility import (
     AdultModelCompatibilityReport,
     AdultModelCompatibilityRepository,
@@ -57,6 +62,29 @@ class CoreDiagnosticWorker(QThread):
     def run(self) -> None:
         try:
             self.completed.emit(run_diagnostics(self._settings))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ModelRecoveryWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        installed_models: list[str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._settings = settings.model_copy(deep=True)
+        self._installed_models = list(installed_models)
+
+    def run(self) -> None:
+        try:
+            self.completed.emit(
+                recover_first_working_model(self._settings, self._installed_models)
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -104,8 +132,11 @@ class FirstRunSetupDialog(QDialog):
         self.compatibility_repository = AdultModelCompatibilityRepository(store)
         self._discovery_worker: ModelDiscoveryWorker | None = None
         self._diagnostic_worker: CoreDiagnosticWorker | None = None
+        self._recovery_worker: ModelRecoveryWorker | None = None
         self._compatibility_worker: CompatibilityWorker | None = None
         self._last_diagnostics: list[DiagnosticResult] = []
+        self._installed_models: list[str] = []
+        self._pending_recovered_model: str | None = None
         self._technical_ready = False
 
         self.setWindowTitle("Ersteinrichtung — Local AI Companion")
@@ -146,6 +177,8 @@ class FirstRunSetupDialog(QDialog):
             "Hier erscheinen Ollama-, Modell- und Mini-Inferenz-Ergebnisse."
         )
         self.test_button = QPushButton("Ollama & echte Mini-Inferenz testen")
+        self.recovery_button = QPushButton("Funktionierendes Ersatzmodell suchen")
+        self.recovery_button.setEnabled(False)
 
         self.compatibility_status = QLabel(
             "Adult-/Kink-Kompatibilität noch nicht geprüft. Dieser Test ist lokal und absichtlich nicht-grafisch."
@@ -186,6 +219,7 @@ class FirstRunSetupDialog(QDialog):
         layout.addLayout(model_row)
         layout.addSpacing(8)
         layout.addWidget(self.test_button)
+        layout.addWidget(self.recovery_button)
         layout.addWidget(self.core_status)
         layout.addWidget(self.diagnostics_output)
         layout.addSpacing(8)
@@ -202,6 +236,7 @@ class FirstRunSetupDialog(QDialog):
         self.model_name.currentTextChanged.connect(self._selection_changed)
         self.load_models_button.clicked.connect(self.discover_models)
         self.test_button.clicked.connect(self.run_core_diagnostics)
+        self.recovery_button.clicked.connect(self.run_model_recovery)
         self.compatibility_button.clicked.connect(self.run_compatibility)
         self.finish_button.clicked.connect(self.finish_setup)
         self.skip_button.clicked.connect(self.skip_future_setup)
@@ -221,6 +256,7 @@ class FirstRunSetupDialog(QDialog):
         self._last_diagnostics = []
         self.finish_button.setEnabled(False)
         self.compatibility_button.setEnabled(False)
+        self.recovery_button.setEnabled(False)
         self.core_status.setText("Auswahl geändert — bitte die echte Mini-Inferenz erneut testen.")
 
     def _set_busy(self, busy: bool) -> None:
@@ -228,6 +264,13 @@ class FirstRunSetupDialog(QDialog):
         self.model_name.setEnabled(not busy)
         self.load_models_button.setEnabled(not busy)
         self.test_button.setEnabled(not busy)
+        alternatives = recovery_candidates(
+            self._installed_models,
+            self.model_name.currentText(),
+        )
+        self.recovery_button.setEnabled(
+            not busy and not self._technical_ready and bool(alternatives)
+        )
         self.later_button.setEnabled(not busy)
         self.skip_button.setEnabled(not busy)
         self.finish_button.setEnabled(not busy and self._technical_ready)
@@ -250,6 +293,7 @@ class FirstRunSetupDialog(QDialog):
         worker.start()
 
     def _models_discovered(self, models: list[str]) -> None:
+        self._installed_models = list(models)
         current = self.model_name.currentText().strip()
         self.model_name.blockSignals(True)
         self.model_name.clear()
@@ -321,9 +365,20 @@ class FirstRunSetupDialog(QDialog):
                 "Der lokale Text-Backendpfad ist technisch bereit. Als Nächstes kann die Adult-/Kink-Eignung geprüft werden."
             )
         else:
-            self.status.setText(
-                "Die lokale Modell-Inferenz ist noch nicht bereit. Behebe den angezeigten Ollama-/Modellfehler und teste erneut."
+            alternatives = recovery_candidates(
+                self._installed_models,
+                self.model_name.currentText(),
             )
+            if alternatives:
+                self.status.setText(
+                    "Die gewählte Inferenz ist fehlgeschlagen. Du kannst jetzt bereits installierte, "
+                    "kleinere Open-Source-Modelle automatisch und nacheinander testen."
+                )
+            else:
+                self.status.setText(
+                    "Die lokale Modell-Inferenz ist noch nicht bereit. Es wurde kein anderes installiertes "
+                    "Modell aus dem strikten Open-Source-Katalog gefunden. Die App lädt nichts automatisch herunter."
+                )
 
     def _diagnostics_failed(self, error: str) -> None:
         self._technical_ready = False
@@ -336,6 +391,80 @@ class FirstRunSetupDialog(QDialog):
         self._set_busy(False)
         if worker is not None:
             worker.deleteLater()
+
+    def run_model_recovery(self) -> None:
+        if self._recovery_worker is not None and self._recovery_worker.isRunning():
+            return
+        try:
+            settings = self._candidate()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ungültige Einstellungen", str(exc))
+            return
+        alternatives = recovery_candidates(self._installed_models, settings.model_name)
+        if not alternatives:
+            QMessageBox.information(
+                self,
+                "Kein Ersatzmodell",
+                "Kein anderes installiertes Modell aus dem strikten Open-Source-Katalog ist verfügbar. "
+                "Es wird nichts automatisch heruntergeladen.",
+            )
+            return
+        self._pending_recovered_model = None
+        self._set_busy(True)
+        self.core_status.setText(
+            "Teste installierte Open-Source-Ersatzmodelle, beginnend mit dem kleinsten …"
+        )
+        self.diagnostics_output.setPlainText(
+            "Getestet werden ausschließlich bereits installierte Modelle. "
+            "Gespeicherte Einstellungen bleiben bis zum erfolgreichen Abschluss unverändert."
+        )
+        worker = ModelRecoveryWorker(settings, self._installed_models, self)
+        worker.completed.connect(self._recovery_completed)
+        worker.failed.connect(self._recovery_failed)
+        worker.finished.connect(self._recovery_finished)
+        self._recovery_worker = worker
+        worker.start()
+
+    def _recovery_completed(self, report: ModelRecoveryReport) -> None:
+        lines = [
+            f"[{'OK' if attempt.ready else 'FEHLER'}] {attempt.model_name}: {attempt.detail}"
+            for attempt in report.attempts
+        ]
+        self.diagnostics_output.setPlainText("\n".join(lines))
+        if report.selected_model is None:
+            self.core_status.setText(
+                "Keines der installierten Open-Source-Ersatzmodelle konnte die echte Mini-Inferenz abschließen."
+            )
+            self.status.setText(
+                "Die gespeicherten Einstellungen wurden nicht verändert. Prüfe Ollama, RAM/VRAM und Treiber."
+            )
+            return
+        self._pending_recovered_model = report.selected_model
+        self.model_name.blockSignals(True)
+        self.model_name.setCurrentText(report.selected_model)
+        self.model_name.blockSignals(False)
+        self.core_status.setText(
+            f"{report.selected_model} hat den Wiederherstellungstest bestanden; die vollständige Diagnose folgt."
+        )
+        self.status.setText(
+            "Ein lokales Ersatzmodell funktioniert. Es wird jetzt mit dem normalen Setup-Test bestätigt."
+        )
+
+    def _recovery_failed(self, error: str) -> None:
+        self._pending_recovered_model = None
+        self.core_status.setText("Die automatische Modellwiederherstellung ist fehlgeschlagen.")
+        self.diagnostics_output.setPlainText(error)
+
+    def _recovery_finished(self) -> None:
+        worker = self._recovery_worker
+        self._recovery_worker = None
+        recovered = self._pending_recovered_model
+        self._pending_recovered_model = None
+        self._set_busy(False)
+        if worker is not None:
+            worker.deleteLater()
+        if recovered:
+            QTimer.singleShot(0, self.run_core_diagnostics)
 
     def run_compatibility(self) -> None:
         if not self._technical_ready:
