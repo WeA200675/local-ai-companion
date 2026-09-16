@@ -107,9 +107,9 @@ def classify_ollama_failure(
         )
         if status >= 500 and any(token in body_folded for token in native_crash_tokens):
             return OllamaFailure(
-                code="native_backend_crash",
+                code="backend_failure",
                 summary=(
-                    f"Ollama ist erreichbar, aber der native Modellprozess für {model_name!r} ist abgestürzt."
+                    f"Ollama ist erreichbar, aber der native Modellprozess ist mit HTTP {status} fehlgeschlagen und der Modellprozess für {model_name!r} ist abgestürzt."
                 ),
                 next_step=(
                     "Nutze in der Ersteinrichtung „Funktionierendes Ersatzmodell suchen“. "
