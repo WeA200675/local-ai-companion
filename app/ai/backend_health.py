@@ -114,7 +114,7 @@ def classify_ollama_failure(
                 next_step=(
                     "Nutze in der Ersteinrichtung „Funktionierendes Ersatzmodell suchen“. "
                     f"Teste zur Abgrenzung außerdem `ollama run {model_name} \"Hallo\"`; "
-                    "wenn auch das abstürzt, prüfe Ollama-Version, Grafiktreiber und verfügbaren RAM/VRAM."
+                    "wenn auch das abstürzt, liegt der Fehler unterhalb der Companion-App; prüfe Ollama-Version, Grafiktreiber und verfügbaren RAM/VRAM."
                 ),
                 technical_detail=body,
             )
