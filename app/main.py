@@ -46,6 +46,7 @@ from app.ui.creative_accents import CreativeAccentsPanel
 from app.ui.creative_variety import CreativeVarietyWidget
 from app.ui.media_history import MediaHistoryWidget
 from app.ui.media_test_center import MediaTestCenterWidget
+from app.ui.media_setup_wizard import MediaSetupWizard
 from app.ui.memory_lab import MemoryLab
 from app.ui.navigation import SidebarNavigation
 from app.ui.persona_lab import PersonaLab
@@ -313,6 +314,7 @@ class MainWindow(QMainWindow):
         self.chat.memory_changed.connect(self.context_inspector.refresh)
         self.chat.media_history_changed.connect(self.media_history.refresh)
         self.chat.media_history_changed.connect(self.character_studio.load_profile)
+        self.chat.media_setup_requested.connect(self._open_media_setup)
         self.media_history.feedback_changed.connect(
             self.settings_widget._refresh_preference_summary
         )
@@ -438,6 +440,11 @@ class MainWindow(QMainWindow):
             settings=settings,
         )
         return model, media_service
+
+    def _open_media_setup(self) -> None:
+        wizard = MediaSetupWizard(self.store, self.settings, self)
+        wizard.settings_saved.connect(self._settings_saved)
+        wizard.exec()
 
     def _settings_saved(self, settings: AppSettings) -> None:
         self.settings = settings.model_copy(deep=True)

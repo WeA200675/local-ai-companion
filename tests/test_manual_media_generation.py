@@ -31,3 +31,13 @@ def test_explicit_intent_bypasses_planner_in_generation_path() -> None:
     assert "intent = forced_intent or self.plan(" in source
     assert 'QPushButton("🎨 Medium jetzt erzeugen")' in chat_source
     assert "forced_intent=forced_intent" in chat_source
+
+
+def test_missing_media_route_opens_in_app_setup_recovery() -> None:
+    chat_source = Path("app/ui/chat.py").read_text(encoding="utf-8")
+    main_source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert "media_setup_requested = Signal()" in chat_source
+    assert "self.media_setup_requested.emit()" in chat_source
+    assert "MediaSetupWizard(self.store, self.settings, self)" in main_source
+    assert "wizard.settings_saved.connect(self._settings_saved)" in main_source
