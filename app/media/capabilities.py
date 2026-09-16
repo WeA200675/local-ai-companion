@@ -122,7 +122,7 @@ def _output_evidence(workflow: dict[str, Any]) -> set[str]:
                 "filminterpolation",
                 "imagesbatch",
             ))
-            or any(key in keys for key in ("frames", "num_frames", "frame_count", "video_frames"))
+            or any("frame" in key for key in keys)
         ):
             frame_evidence = True
 
