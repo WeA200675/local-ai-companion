@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from app.ai.model_recovery import (\n    recommended_install_commands,\n    recovery_candidates,\n    recover_first_working_model,\n)
+from app.ai.model_recovery import (
+    recommended_install_commands,
+    recovery_candidates,
+    recover_first_working_model,
+)
 from app.diagnostics import DiagnosticResult
 from app.settings import AppSettings
 
