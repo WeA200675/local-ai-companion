@@ -238,6 +238,7 @@ class MemoryWorker(QThread):
 class ChatWidget(QWidget):
     media_history_changed = Signal()
     memory_changed = Signal()
+    media_setup_requested = Signal()
 
     def __init__(
         self,
@@ -687,7 +688,15 @@ class ChatWidget(QWidget):
 
     def generate_media_now(self) -> None:
         if not self.media_service or not self.media_service.enabled:
-            QMessageBox.information(self, "Lokale Medien", "Kein lokaler Medien-Workflow ist bereit.")
+            answer = QMessageBox.question(
+                self,
+                "Lokale Medien noch nicht eingerichtet",
+                "Kein lokaler Medien-Workflow ist bereit. Soll der Medien-Assistent jetzt geöffnet werden?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.media_setup_requested.emit()
             return
         if self._background_worker_running():
             self.status.setText("Warte kurz, bis der lokale Hintergrundjob fertig ist …")
