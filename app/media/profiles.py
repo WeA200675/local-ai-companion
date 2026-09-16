@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 MediaKind = Literal["image", "gif", "video"]
 RenderQuality = Literal["draft", "balanced", "high"]
@@ -17,6 +17,24 @@ RoutingFocus = Literal[
     "motion",
 ]
 _RENDER_KEYS = {"width", "height", "steps", "cfg", "denoise", "frames", "fps"}
+_QUALITY_RANK = {"draft": 0, "balanced": 1, "high": 2}
+
+
+class CheckpointSuitability(BaseModel):
+    """Explicit local suitability profile; it never implies checkpoint licensing."""
+
+    portrait: float = Field(default=0.5, ge=0.0, le=1.0)
+    full_body: float = Field(default=0.5, ge=0.0, le=1.0)
+    detail: float = Field(default=0.5, ge=0.0, le=1.0)
+    environment: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    def score_for(self, focus_tags: set[str]) -> float:
+        values = [
+            float(getattr(self, tag))
+            for tag in ("portrait", "full_body", "detail", "environment")
+            if tag in focus_tags
+        ]
+        return sum(values) / len(values) if values else 0.5
 
 
 class WorkflowInputBinding(BaseModel):
@@ -54,12 +72,23 @@ class WorkflowProfile(BaseModel):
     # confirmation flag only records an explicit local user confirmation.
     checkpoint_name: str = ""
     checkpoint_license_confirmed: bool = False
+    checkpoint_suitability: CheckpointSuitability = Field(
+        default_factory=CheckpointSuitability
+    )
     routing_tags: list[RoutingFocus] = Field(default_factory=list)
 
     # Optional local render policy. Old catalogs remain valid; when no explicit
     # bindings are supplied ComfyUIClient attempts safe common-input detection.
     render_quality: RenderQuality = "balanced"
+    quality_ladder: list[RenderQuality] = Field(
+        default_factory=lambda: ["draft", "balanced", "high"]
+    )
     max_megapixels: float | None = Field(default=None, ge=0.20, le=8.0)
+    min_vram_gb: float | None = Field(default=None, ge=0.0, le=128.0)
+    preferred_vram_gb: float | None = Field(default=None, ge=0.0, le=128.0)
+    max_motion_frames: int | None = Field(default=None, ge=8, le=1000)
+    max_motion_fps: int | None = Field(default=None, ge=1, le=240)
+    quarantine_failures: int = Field(default=3, ge=1, le=20)
     render_bindings: dict[str, WorkflowInputBinding] = Field(default_factory=dict)
 
     @field_validator(
@@ -88,6 +117,16 @@ class WorkflowProfile(BaseModel):
     def _nonempty_kinds(cls, value: list[MediaKind]) -> list[MediaKind]:
         return value or ["image"]
 
+    @field_validator("quality_ladder")
+    @classmethod
+    def _ordered_quality_ladder(
+        cls, value: list[RenderQuality]
+    ) -> list[RenderQuality]:
+        unique = set(value)
+        if not unique:
+            return ["draft", "balanced", "high"]
+        return sorted(unique, key=_QUALITY_RANK.__getitem__)
+
     @field_validator("render_bindings")
     @classmethod
     def _valid_render_bindings(
@@ -98,6 +137,16 @@ class WorkflowProfile(BaseModel):
             raise ValueError(f"unsupported render binding(s): {', '.join(unsupported)}")
         return value
 
+    @model_validator(mode="after")
+    def _valid_vram_range(self) -> "WorkflowProfile":
+        if (
+            self.min_vram_gb is not None
+            and self.preferred_vram_gb is not None
+            and self.preferred_vram_gb < self.min_vram_gb
+        ):
+            raise ValueError("preferred_vram_gb must be >= min_vram_gb")
+        return self
+
     @property
     def workflow_path(self) -> Path:
         return Path(self.workflow).expanduser()
@@ -105,6 +154,20 @@ class WorkflowProfile(BaseModel):
     @property
     def reference_configured(self) -> bool:
         return bool(self.reference_node and self.reference_input_key)
+
+    def quality_attempts(self, start: RenderQuality | None = None) -> tuple[RenderQuality, ...]:
+        """Return a deterministic high-to-low retry order within this profile's ladder."""
+
+        requested = start or self.render_quality
+        ceiling = _QUALITY_RANK[requested]
+        attempts = [
+            quality
+            for quality in reversed(self.quality_ladder)
+            if _QUALITY_RANK[quality] <= ceiling
+        ]
+        if requested not in attempts:
+            attempts.insert(0, requested)
+        return tuple(dict.fromkeys(attempts))
 
     def resolve_relative_to(self, base_dir: Path) -> "WorkflowProfile":
         path = self.workflow_path
@@ -216,6 +279,9 @@ def choose_workflow_profile(
             score += 12 * len(overlap)
         elif declared and requested_focus:
             score -= 4
+
+        suitability = profile.checkpoint_suitability.score_for(requested_focus)
+        score += int(round((suitability - 0.5) * 40))
 
         score += max(-40, min(40, int(learned.get(profile.id, 0))))
         candidates.append((score, profile.id, profile))
