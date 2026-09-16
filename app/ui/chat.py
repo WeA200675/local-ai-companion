@@ -22,6 +22,7 @@ from app.ai.memory_learning import AdaptiveMemoryLearner
 from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
+from app.media.comfyui_runtime import VisibleMediaBackendError
 from app.media.planner import MediaIntent
 from app.media.service import MediaService
 from app.memory.store import StateStore
@@ -110,7 +111,7 @@ class ModelWorker(QThread):
 class MediaWorker(QThread):
     generated = Signal(str, str)
     skipped = Signal()
-    failed = Signal(str)
+    failed = Signal(str, bool)
 
     def __init__(
         self,
@@ -140,8 +141,11 @@ class MediaWorker(QThread):
                 preference_tags=self._preference_tags,
                 forced_intent=self._forced_intent,
             )
+        except VisibleMediaBackendError as exc:
+            self.failed.emit(str(exc), exc.retry_safe and self._forced_intent is not None)
+            return
         except Exception as exc:  # media must never take the chat down
-            self.failed.emit(str(exc))
+            self.failed.emit(str(exc), False)
             return
         if result is None:
             self.skipped.emit()
@@ -270,6 +274,7 @@ class ChatWidget(QWidget):
         self._continuation_prefix = ""
         self._last_response_incomplete = False
         self._last_media_error = ""
+        self._last_manual_media_request: tuple[str, str, MediaIntent] | None = None
 
         self.transcript = QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
@@ -300,10 +305,16 @@ class ChatWidget(QWidget):
         self.generate_media_button.setToolTip(
             "Lokale Medienpipeline unabhängig von Olivias automatischer Entscheidung testen"
         )
+        self.retry_media_button = QPushButton("Render wiederholen")
+        self.retry_media_button.setEnabled(False)
+        self.retry_media_button.setToolTip(
+            "Letzten expliziten Render nur nach einem eindeutig wiederholbaren Fehler erneut starten"
+        )
 
         message_action_row = QHBoxLayout()
         message_action_row.addStretch(1)
         message_action_row.addWidget(self.generate_media_button)
+        message_action_row.addWidget(self.retry_media_button)
         message_action_row.addWidget(self.continue_button)
         message_action_row.addWidget(self.regenerate_button)
 
@@ -333,6 +344,7 @@ class ChatWidget(QWidget):
         self.clear_button.clicked.connect(self.clear_chat)
         self.regenerate_button.clicked.connect(self.regenerate_last_response)
         self.generate_media_button.clicked.connect(self.generate_media_now)
+        self.retry_media_button.clicked.connect(self.retry_manual_media)
         self.continue_button.clicked.connect(self.continue_last_response)
         self.more_button.clicked.connect(lambda: self._start_learning("positive"))
         self.less_button.clicked.connect(lambda: self._start_learning("negative"))
@@ -712,6 +724,18 @@ class ChatWidget(QWidget):
         )
         self._start_media_generation(user_text, assistant_text, forced_intent=intent)
 
+    def retry_manual_media(self) -> None:
+        request = self._last_manual_media_request
+        if request is None or not self.retry_media_button.isEnabled():
+            return
+        user_text, assistant_text, intent = request
+        self.retry_media_button.setEnabled(False)
+        self._start_media_generation(
+            user_text,
+            assistant_text,
+            forced_intent=intent.model_copy(deep=True),
+        )
+
     def _start_media_generation(
         self,
         user_text: str,
@@ -726,6 +750,12 @@ class ChatWidget(QWidget):
 
         self.media_preview.setVisible(True)
         self._last_media_error = ""
+        self.retry_media_button.setEnabled(False)
+        self._last_manual_media_request = (
+            (user_text, assistant_text, forced_intent.model_copy(deep=True))
+            if forced_intent is not None
+            else None
+        )
         self.status.setText("KI plant optional ein lokales Bild …")
         worker = MediaWorker(
             self.media_service,
@@ -752,8 +782,9 @@ class ChatWidget(QWidget):
         if self._memory_worker is None or not self._memory_worker.isRunning():
             self.status.setText("Kein Bild für diese Antwort nötig")
 
-    def _media_failed(self, error: str) -> None:
+    def _media_failed(self, error: str, retry_safe: bool) -> None:
         self._last_media_error = error.strip() or "Unbekannter lokaler Medienfehler"
+        self.retry_media_button.setEnabled(retry_safe and self._last_manual_media_request is not None)
         self.status.setText("Lokales Medium fehlgeschlagen — Details wurden angezeigt")
         QMessageBox.warning(
             self,
