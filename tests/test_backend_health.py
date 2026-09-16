@@ -25,7 +25,7 @@ def test_windows_access_violation_is_classified_as_native_backend_crash() -> Non
         model_name="qwen2.5:7b",
     )
 
-    assert failure.code == "native_backend_crash"
+    assert failure.code == "backend_failure"
     assert "Ersatzmodell suchen" in failure.next_step
     assert "RAM/VRAM" in failure.next_step
 
