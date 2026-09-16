@@ -12,13 +12,22 @@ from app.ai.scene_mixer import ATMOSPHERES, COMPOSITIONS, LIGHTING, SETTINGS
 from app.ai.visual_motifs import default_visual_motifs
 from app.media.capabilities import WorkflowCapability, inspect_workflow_catalog, runnable_kinds
 from app.media.comfyui import ComfyUIClient, ComfyUIError, GeneratedMedia
+from app.media.comfyui_runtime import VisibleMediaBackendError
 from app.media.coverage import VisualCoverageRepository
 from app.media.hardware import ComfyUIHardwareProbe, MediaHardwareBudget
 from app.media.planner import MediaIntent, MediaPlanner
-from app.media.profiles import WorkflowProfile, choose_workflow_profile, load_workflow_catalog
+from app.media.profiles import RenderQuality, WorkflowProfile, load_workflow_catalog
 from app.media.prompting import build_visual_prompt
 from app.media.rendering import MediaRenderCalculator, MediaRenderPlan
-from app.media.workflow_routing import WorkflowPerformanceRepository, intent_focus_tags
+from app.media.workflow_routing import (
+    WorkflowHealthRepository,
+    WorkflowPerformanceRepository,
+    WorkflowRouter,
+    WorkflowRoutingDecision,
+    classify_render_failure,
+    intent_focus_tags,
+    select_media_kind,
+)
 from app.memory.store import StateStore
 from app.settings import AppSettings
 
@@ -43,6 +52,8 @@ class MediaResult:
     history_id: int | None = None
     workflow_profile: str | None = None
     render_plan: MediaRenderPlan | None = None
+    routing_decision: WorkflowRoutingDecision | None = None
+    routing_attempts: tuple[dict[str, object], ...] = ()
 
     @property
     def path(self) -> Path:
@@ -76,6 +87,9 @@ class MediaService:
             if store is not None
             else None
         )
+        self.workflow_health = (
+            WorkflowHealthRepository(store) if store is not None else None
+        )
         self.workflow_profiles: list[WorkflowProfile] = []
         self.workflow_capabilities: dict[str, WorkflowCapability] = {}
         if self.settings.profile_catalog_path is not None:
@@ -92,15 +106,28 @@ class MediaService:
     def _runnable_profiles(self) -> list[WorkflowProfile]:
         if not self.workflow_profiles:
             return []
-        return [
-            profile
-            for profile in self.workflow_profiles
-            if (capability := self.workflow_capabilities.get(profile.id)) is not None
-            and capability.runnable
-        ]
+        profiles: list[WorkflowProfile] = []
+        for profile in self.workflow_profiles:
+            capability = self.workflow_capabilities.get(profile.id)
+            if capability is None or not capability.runnable:
+                continue
+            if (
+                self.workflow_health is not None
+                and self.workflow_health.get(profile.id).quarantined
+            ):
+                continue
+            profiles.append(profile)
+        return profiles
 
     def _runnable_profile_kinds(self) -> set[str]:
-        return runnable_kinds(list(self.workflow_capabilities.values()))
+        profile_ids = {profile.id for profile in self._runnable_profiles()}
+        return runnable_kinds(
+            [
+                capability
+                for profile_id, capability in self.workflow_capabilities.items()
+                if profile_id in profile_ids
+            ]
+        )
 
     @property
     def enabled(self) -> bool:
@@ -181,6 +208,26 @@ class MediaService:
                 return fallback
         return None
 
+    def _route_workflow_profiles(
+        self,
+        intent: MediaIntent,
+        *,
+        continuity_key: str | None,
+        reference_path: Path | None,
+    ) -> WorkflowRoutingDecision:
+        routed_intent = intent.model_copy(update={"continuity_key": continuity_key})
+        router = WorkflowRouter(
+            self.workflow_profiles,
+            self.workflow_capabilities,
+            performance=self.workflow_performance,
+            health=self.workflow_health,
+        )
+        return router.route(
+            routed_intent,
+            hardware=self.hardware_budget(),
+            reference_available=reference_path is not None,
+        )
+
     def _select_workflow_profile(
         self,
         intent: MediaIntent,
@@ -188,31 +235,42 @@ class MediaService:
         continuity_key: str | None,
         reference_path: Path | None,
     ) -> WorkflowProfile | None:
-        profiles = self._runnable_profiles()
-        if not profiles:
-            return None
-        reference_supported_ids = {
-            capability.profile_id
-            for capability in self.workflow_capabilities.values()
-            if capability.runnable and capability.reference_supported
-        }
-        focus_tags = set(intent_focus_tags(intent))
-        performance_scores = (
-            self.workflow_performance.scores(
-                (profile.id for profile in profiles),
-                focus_tags,
-            )
-            if self.workflow_performance is not None
-            else {}
+        """Compatibility wrapper for callers that only need the primary route."""
+
+        decision = self._route_workflow_profiles(
+            intent,
+            continuity_key=continuity_key,
+            reference_path=reference_path,
         )
-        return choose_workflow_profile(
-            profiles,
-            kind=intent.kind,
-            character_focus=bool(continuity_key),
-            reference_available=reference_path is not None,
-            reference_supported_ids=reference_supported_ids,
-            focus_tags=focus_tags,
-            performance_scores=performance_scores,
+        return decision.selected.profile if decision.selected is not None else None
+
+    def diagnose_routing(self, intent: MediaIntent) -> WorkflowRoutingDecision:
+        """Explain which profile would be selected without starting a render."""
+
+        continuity_key = intent.continuity_key if self.settings.continuity_enabled else None
+        return self._route_workflow_profiles(
+            intent,
+            continuity_key=continuity_key,
+            reference_path=self._reference_path(continuity_key),
+        )
+
+    def record_workflow_probe(
+        self,
+        profile_id: str,
+        *,
+        succeeded: bool,
+        error: str = "",
+    ) -> None:
+        """Update quarantine state after an explicit local workflow test."""
+
+        if self.workflow_health is None:
+            return
+        if profile_id not in {profile.id for profile in self.workflow_profiles}:
+            raise KeyError(f"Unknown workflow profile: {profile_id}")
+        self.workflow_health.record_probe(
+            profile_id,
+            succeeded=succeeded,
+            error=error,
         )
 
     @staticmethod
@@ -403,15 +461,50 @@ Do not include prose outside the JSON object."""
         preference_tags: Iterable[str] = (),
         *,
         workflow_profile: WorkflowProfile | None = None,
+        quality_override: RenderQuality | None = None,
     ) -> MediaRenderPlan:
-        quality = workflow_profile.render_quality if workflow_profile is not None else "balanced"
+        quality = quality_override or (
+            workflow_profile.render_quality if workflow_profile is not None else "balanced"
+        )
         max_megapixels = workflow_profile.max_megapixels if workflow_profile is not None else None
-        return self.render_calculator.calculate(
+        plan = self.render_calculator.calculate(
             intent,
             [item for item in preference_tags],
             quality=quality,
             max_megapixels=max_megapixels,
             hardware_budget=self.hardware_budget(),
+        )
+        if intent.kind == "image" or workflow_profile is None:
+            return plan
+
+        frames = plan.frames
+        fps = plan.fps
+        rationale = list(plan.rationale)
+        if (
+            workflow_profile.max_motion_frames is not None
+            and frames > workflow_profile.max_motion_frames
+        ):
+            frames = max(8, workflow_profile.max_motion_frames)
+            rationale.append(
+                f"profile {workflow_profile.id} capped motion at {frames} frames"
+            )
+        if workflow_profile.max_motion_fps is not None and fps > workflow_profile.max_motion_fps:
+            fps = workflow_profile.max_motion_fps
+            rationale.append(f"profile {workflow_profile.id} capped motion at {fps} fps")
+        if frames == plan.frames and fps == plan.fps:
+            return plan
+        frame_factor = max(1.0, frames / 8.0)
+        return plan.model_copy(
+            update={
+                "frames": frames,
+                "fps": fps,
+                "duration_seconds": round(frames / fps, 2),
+                "estimated_work_units": round(
+                    plan.megapixels * plan.steps * frame_factor,
+                    2,
+                ),
+                "rationale": rationale,
+            }
         )
 
     def generate_for_exchange(
@@ -433,6 +526,28 @@ Do not include prose outside the JSON object."""
         if not intent.generate:
             return None
 
+        hardware = self.hardware_budget()
+        kind_decision = select_media_kind(
+            intent,
+            self.available_media_kinds,
+            hardware=hardware,
+            explicit_motion=self._explicit_motion_request(user_text),
+        )
+        if kind_decision.selected is None:
+            return None
+        if kind_decision.selected != intent.kind:
+            intent = intent.model_copy(
+                update={
+                    "kind": kind_decision.selected,
+                    "motion": "" if kind_decision.selected == "image" else intent.motion,
+                    "reason": (
+                        f"{intent.reason}; {kind_decision.reason}"
+                        if intent.reason.strip()
+                        else kind_decision.reason
+                    ),
+                }
+            )
+
         positive, negative = build_visual_prompt(intent, persona, preference_list)
         liked_cues, disliked_cues = self._visual_cues(limit=6)
         if liked_cues:
@@ -449,40 +564,105 @@ Do not include prose outside the JSON object."""
             positive = f"{positive}, {character_profile.appearance_prompt}"
 
         reference_path = self._reference_path(continuity_key)
-        workflow_profile = self._select_workflow_profile(
+        routing = self._route_workflow_profiles(
             intent,
             continuity_key=continuity_key,
             reference_path=reference_path,
         )
-        if workflow_profile is not None and reference_path is not None:
-            capability = self.workflow_capabilities.get(workflow_profile.id)
-            if capability is None or not capability.reference_supported:
-                reference_path = None
-        elif workflow_profile is None and reference_path is not None:
-            if not self.backend.reference_configured:
-                reference_path = None
-
-        # With a configured catalog, a missing profile is a validated routing
-        # failure, not an invitation to queue the wrong legacy workflow.
-        if self.settings.profile_catalog_path is not None and workflow_profile is None:
+        if self.settings.profile_catalog_path is not None and routing.selected is None:
             return None
 
-        render_plan = self.calculate_render_plan(
-            intent,
-            preference_list,
-            workflow_profile=workflow_profile,
-        )
+        # A catalog-free installation keeps the historical single-workflow path.
+        candidates = routing.candidates or (None,)
+        generated: GeneratedMedia | None = None
+        workflow_profile: WorkflowProfile | None = None
+        render_plan: MediaRenderPlan | None = None
+        attempts: list[dict[str, object]] = []
+        last_visible_error: VisibleMediaBackendError | None = None
+        unsafe_failure = False
 
-        try:
-            generated = self.backend.generate(
-                positive,
-                negative,
-                seed=seed,
-                reference_path=reference_path,
-                profile=workflow_profile,
-                render_plan=render_plan,
-            )
-        except ComfyUIError:
+        for candidate in candidates:
+            profile = candidate.profile if candidate is not None else None
+            quality_attempts = profile.quality_attempts() if profile is not None else ("balanced",)
+            seen_effective_quality: set[str] = set()
+            candidate_error: Exception | None = None
+            candidate_policy = None
+            profile_reference = reference_path
+            if profile_reference is not None and profile is not None:
+                capability = self.workflow_capabilities.get(profile.id)
+                if capability is None or not capability.reference_supported:
+                    profile_reference = None
+            elif profile_reference is not None and profile is None:
+                if not self.backend.reference_configured:
+                    profile_reference = None
+
+            for quality in quality_attempts:
+                render_plan = self.calculate_render_plan(
+                    intent,
+                    preference_list,
+                    workflow_profile=profile,
+                    quality_override=quality,
+                )
+                if render_plan.quality in seen_effective_quality:
+                    continue
+                seen_effective_quality.add(render_plan.quality)
+                try:
+                    generated = self.backend.generate(
+                        positive,
+                        negative,
+                        seed=seed,
+                        reference_path=profile_reference,
+                        profile=profile,
+                        render_plan=render_plan,
+                    )
+                except (ComfyUIError, VisibleMediaBackendError) as exc:
+                    last_visible_error = (
+                        exc if isinstance(exc, VisibleMediaBackendError) else last_visible_error
+                    )
+                    candidate_error = exc
+                    candidate_policy = classify_render_failure(exc)
+                    attempts.append(
+                        {
+                            "profile_id": profile.id if profile is not None else "legacy",
+                            "quality": render_plan.quality,
+                            "status": "failed",
+                            "category": candidate_policy.category,
+                            "safe_to_fallback": candidate_policy.safe_to_fallback,
+                            "error": str(exc),
+                        }
+                    )
+                    if not candidate_policy.safe_to_fallback:
+                        unsafe_failure = True
+                        break
+                    if not candidate_policy.degrade_quality:
+                        break
+                    continue
+                else:
+                    attempts.append(
+                        {
+                            "profile_id": profile.id if profile is not None else "legacy",
+                            "quality": render_plan.quality,
+                            "status": "success",
+                        }
+                    )
+                    workflow_profile = profile
+                    if profile is not None and self.workflow_health is not None:
+                        self.workflow_health.record_success(profile.id)
+                    break
+
+            if generated is not None or unsafe_failure:
+                break
+            if profile is not None and candidate_error is not None and self.workflow_health is not None:
+                self.workflow_health.record_failure(
+                    profile.id,
+                    str(candidate_error),
+                    threshold=profile.quarantine_failures,
+                    confirmed=bool(candidate_policy and candidate_policy.safe_to_fallback),
+                )
+
+        if generated is None or render_plan is None:
+            if last_visible_error is not None:
+                raise last_visible_error
             return None
 
         if character_profile is not None and self.store is not None:
@@ -494,7 +674,13 @@ Do not include prose outside the JSON object."""
             intent_payload = intent.model_dump(mode="json")
             focus_tags = list(intent_focus_tags(intent))
             intent_payload["workflow_focus_tags"] = focus_tags
-            if workflow_profile is not None:
+            intent_payload["media_kind_decision"] = kind_decision.as_dict()
+            intent_payload["routing_decision"] = routing.as_dict()
+            intent_payload["routing_attempts"] = attempts
+            explanation = routing.explain()
+            if workflow_profile is not None and routing.selected is not None:
+                if workflow_profile.id != routing.selected.profile.id:
+                    explanation += f" Primärprofil fehlgeschlagen; Fallback {workflow_profile.id} war erfolgreich."
                 intent_payload["workflow_profile"] = workflow_profile.id
                 intent_payload["workflow_checkpoint"] = workflow_profile.checkpoint_name
                 intent_payload["workflow_declared_routing_tags"] = list(
@@ -515,6 +701,7 @@ Do not include prose outside the JSON object."""
                         "render_controls": list(capability.render_controls),
                         "output_evidence": list(capability.output_evidence),
                     }
+            intent_payload["routing_explanation"] = explanation
             intent_payload["render_plan"] = render_plan.model_dump(mode="json")
             intent_payload["render_parameters_applied"] = list(
                 generated.applied_render_parameters
@@ -535,4 +722,6 @@ Do not include prose outside the JSON object."""
             history_id=history_id,
             workflow_profile=workflow_profile.id if workflow_profile is not None else None,
             render_plan=render_plan,
+            routing_decision=routing,
+            routing_attempts=tuple(attempts),
         )

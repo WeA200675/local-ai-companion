@@ -242,6 +242,29 @@ class MediaHistoryWidget(QWidget):
         if isinstance(score, (int, float)):
             sample_text = f" · {samples} bewertete Render(s)" if isinstance(samples, int) else ""
             lines.append(f"Gelernter Workflow-Score vor Render: {score:+g}{sample_text}")
+        explanation = str(intent.get("routing_explanation") or "").strip()
+        if explanation:
+            lines.append(f"Warum dieses Profil: {explanation}")
+        decision = intent.get("routing_decision")
+        if isinstance(decision, dict):
+            selected = str(decision.get("selected_profile_id") or "").strip()
+            fallbacks = decision.get("fallback_profile_ids")
+            if selected:
+                lines.append(f"Router-Auswahl: {selected}")
+            if isinstance(fallbacks, list) and fallbacks:
+                lines.append("Fallback-Kette: " + " → ".join(str(item) for item in fallbacks))
+            quarantined = decision.get("quarantined_profile_ids")
+            if isinstance(quarantined, list) and quarantined:
+                lines.append("Quarantäne: " + ", ".join(str(item) for item in quarantined))
+        attempts = intent.get("routing_attempts")
+        if isinstance(attempts, list):
+            failed = [
+                item
+                for item in attempts
+                if isinstance(item, dict) and item.get("status") == "failed"
+            ]
+            if failed:
+                lines.append(f"Render-Versuche: {len(attempts)} ({len(failed)} fehlgeschlagen)")
         probe = str(intent.get("suitability_probe") or "").strip()
         if probe:
             lines.append(f"Eignungstest: {probe}")
