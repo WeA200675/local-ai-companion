@@ -31,6 +31,7 @@ class VisibleMediaBackendError(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.prompt_id = prompt_id
+        self.retry_safe = stage != "queue"
 
 
 def classify_resilient_comfyui_error(error: ResilientComfyUIError) -> MediaBackendPresentation:

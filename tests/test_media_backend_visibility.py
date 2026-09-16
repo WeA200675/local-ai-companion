@@ -65,3 +65,31 @@ def test_desktop_runtime_uses_visible_resilient_client() -> None:
     source = Path("app/main.py").read_text(encoding="utf-8")
 
     assert "media_backend = VisibleResilientComfyUIClient(" in source
+
+
+@pytest.mark.parametrize(
+    ("stage", "retry_safe"),
+    [
+        ("prepare", True),
+        ("reference_upload", True),
+        ("history", True),
+        ("execution", True),
+        ("output download", True),
+        ("timeout", True),
+        ("queue", False),
+    ],
+)
+def test_visible_failure_marks_only_ambiguous_queue_as_unsafe(
+    stage: str, retry_safe: bool
+) -> None:
+    error = VisibleMediaBackendError("failed", stage=stage)
+
+    assert error.retry_safe is retry_safe
+
+
+def test_chat_retry_is_limited_to_explicit_media_requests() -> None:
+    source = Path("app/ui/chat.py").read_text(encoding="utf-8")
+
+    assert "exc.retry_safe and self._forced_intent is not None" in source
+    assert "self._last_manual_media_request" in source
+    assert "Render wiederholen" in source
