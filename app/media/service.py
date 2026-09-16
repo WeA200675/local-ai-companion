@@ -107,6 +107,13 @@ class MediaService:
         has_profile = bool(self._runnable_profiles())
         return self.settings.media_enabled and (self.backend.enabled or has_profile)
 
+    @property
+    def available_media_kinds(self) -> tuple[str, ...]:
+        kinds = self._runnable_profile_kinds()
+        if kinds:
+            return tuple(kind for kind in ("image", "gif", "video") if kind in kinds)
+        return ("image",) if self.backend.enabled else ()
+
     def close(self) -> None:
         self.backend.close()
 
@@ -414,9 +421,10 @@ Do not include prose outside the JSON object."""
         assistant_text: str,
         persona: PersonaState,
         preference_tags: Iterable[str] = (),
+        forced_intent: MediaIntent | None = None,
     ) -> MediaResult | None:
         preference_list = [item for item in preference_tags]
-        intent = self.plan(
+        intent = forced_intent or self.plan(
             user_text=user_text,
             assistant_text=assistant_text,
             persona=persona,

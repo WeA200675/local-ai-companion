@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QInputDialog,
     QPushButton,
     QPlainTextEdit,
     QTextBrowser,
@@ -21,6 +22,7 @@ from app.ai.memory_learning import AdaptiveMemoryLearner
 from app.ai.model import ChatMessage, LocalModelError, OllamaClient
 from app.ai.persona import PersonaState
 from app.ai.prompting import build_system_prompt
+from app.media.planner import MediaIntent
 from app.media.service import MediaService
 from app.memory.store import StateStore
 from app.settings import AppSettings
@@ -118,6 +120,7 @@ class MediaWorker(QThread):
         assistant_text: str,
         persona: PersonaState,
         preference_tags: list[str],
+        forced_intent: MediaIntent | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -126,6 +129,7 @@ class MediaWorker(QThread):
         self._assistant_text = assistant_text
         self._persona = persona.model_copy(deep=True)
         self._preference_tags = list(preference_tags)
+        self._forced_intent = forced_intent.model_copy(deep=True) if forced_intent else None
 
     def run(self) -> None:
         try:
@@ -134,6 +138,7 @@ class MediaWorker(QThread):
                 assistant_text=self._assistant_text,
                 persona=self._persona,
                 preference_tags=self._preference_tags,
+                forced_intent=self._forced_intent,
             )
         except Exception as exc:  # media must never take the chat down
             self.failed.emit(str(exc))
@@ -291,9 +296,14 @@ class ChatWidget(QWidget):
         self.continue_button = QPushButton("▶ Fortsetzen")
         self.continue_button.setToolTip("Eine gestoppte oder unterbrochene Antwort fortsetzen")
         self.continue_button.setEnabled(False)
+        self.generate_media_button = QPushButton("🎨 Medium jetzt erzeugen")
+        self.generate_media_button.setToolTip(
+            "Lokale Medienpipeline unabhängig von Olivias automatischer Entscheidung testen"
+        )
 
         message_action_row = QHBoxLayout()
         message_action_row.addStretch(1)
+        message_action_row.addWidget(self.generate_media_button)
         message_action_row.addWidget(self.continue_button)
         message_action_row.addWidget(self.regenerate_button)
 
@@ -322,6 +332,7 @@ class ChatWidget(QWidget):
         self.stop_button.clicked.connect(self.stop_current_response)
         self.clear_button.clicked.connect(self.clear_chat)
         self.regenerate_button.clicked.connect(self.regenerate_last_response)
+        self.generate_media_button.clicked.connect(self.generate_media_now)
         self.continue_button.clicked.connect(self.continue_last_response)
         self.more_button.clicked.connect(lambda: self._start_learning("positive"))
         self.less_button.clicked.connect(lambda: self._start_learning("negative"))
@@ -662,7 +673,52 @@ class ChatWidget(QWidget):
         workers = (self._media_worker, self._learning_worker, self._memory_worker)
         return any(worker is not None and worker.isRunning() for worker in workers)
 
-    def _start_media_generation(self, user_text: str, assistant_text: str) -> None:
+    def generate_media_now(self) -> None:
+        if not self.media_service or not self.media_service.enabled:
+            QMessageBox.information(self, "Lokale Medien", "Kein lokaler Medien-Workflow ist bereit.")
+            return
+        if self._background_worker_running():
+            self.status.setText("Warte kurz, bis der lokale Hintergrundjob fertig ist …")
+            return
+        exchange = self.store.latest_exchange()
+        if exchange is None:
+            QMessageBox.information(
+                self,
+                "Lokale Medien",
+                "Schreibe zuerst eine Nachricht, damit ein Szenenkontext vorhanden ist.",
+            )
+            return
+        kinds = list(self.media_service.available_media_kinds)
+        kind, accepted = QInputDialog.getItem(
+            self,
+            "Medium jetzt erzeugen",
+            "Lokal verfügbare Medienart:",
+            kinds,
+            0,
+            False,
+        )
+        if not accepted or not kind:
+            return
+        user_text, assistant_text = exchange
+        intent = MediaIntent(
+            generate=True,
+            kind=kind,
+            mood="current conversation",
+            theme="explicit local media test",
+            reason="explicit user request",
+            continuity_key=(
+                self.settings.continuity_key if self.settings.continuity_enabled else None
+            ),
+        )
+        self._start_media_generation(user_text, assistant_text, forced_intent=intent)
+
+    def _start_media_generation(
+        self,
+        user_text: str,
+        assistant_text: str,
+        *,
+        forced_intent: MediaIntent | None = None,
+    ) -> None:
         if not self.media_service or not self.media_service.enabled:
             return
         if self._media_worker is not None and self._media_worker.isRunning():
@@ -677,6 +733,7 @@ class ChatWidget(QWidget):
             assistant_text=assistant_text,
             persona=self.persona,
             preference_tags=self.preference_tags,
+            forced_intent=forced_intent,
             parent=self,
         )
         worker.generated.connect(self._media_generated)
