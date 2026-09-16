@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QHBoxLayout,
@@ -19,6 +20,7 @@ from app.ai.model_recovery import (
     ModelRecoveryReport,
     recover_first_working_model,
     recovery_candidates,
+    recommended_install_commands,
 )
 from app.ai.model_compatibility import (
     AdultModelCompatibilityReport,
@@ -179,6 +181,9 @@ class FirstRunSetupDialog(QDialog):
         self.test_button = QPushButton("Ollama & echte Mini-Inferenz testen")
         self.recovery_button = QPushButton("Funktionierendes Ersatzmodell suchen")
         self.recovery_button.setEnabled(False)
+        self.copy_diagnostics_button = QPushButton("Diagnose kopieren")
+        self.copy_diagnostics_button.setEnabled(False)
+        self.copy_install_button = QPushButton("Kleine OSS-Modelle als Befehle kopieren")
 
         self.compatibility_status = QLabel(
             "Adult-/Kink-Kompatibilität noch nicht geprüft. Dieser Test ist lokal und absichtlich nicht-grafisch."
@@ -219,7 +224,11 @@ class FirstRunSetupDialog(QDialog):
         layout.addLayout(model_row)
         layout.addSpacing(8)
         layout.addWidget(self.test_button)
-        layout.addWidget(self.recovery_button)
+        recovery_actions = QHBoxLayout()
+        recovery_actions.addWidget(self.recovery_button)
+        recovery_actions.addWidget(self.copy_diagnostics_button)
+        recovery_actions.addWidget(self.copy_install_button)
+        layout.addLayout(recovery_actions)
         layout.addWidget(self.core_status)
         layout.addWidget(self.diagnostics_output)
         layout.addSpacing(8)
@@ -237,6 +246,8 @@ class FirstRunSetupDialog(QDialog):
         self.load_models_button.clicked.connect(self.discover_models)
         self.test_button.clicked.connect(self.run_core_diagnostics)
         self.recovery_button.clicked.connect(self.run_model_recovery)
+        self.copy_diagnostics_button.clicked.connect(self.copy_diagnostics)
+        self.copy_install_button.clicked.connect(self.copy_install_commands)
         self.compatibility_button.clicked.connect(self.run_compatibility)
         self.finish_button.clicked.connect(self.finish_setup)
         self.skip_button.clicked.connect(self.skip_future_setup)
@@ -257,6 +268,7 @@ class FirstRunSetupDialog(QDialog):
         self.finish_button.setEnabled(False)
         self.compatibility_button.setEnabled(False)
         self.recovery_button.setEnabled(False)
+        self.copy_diagnostics_button.setEnabled(False)
         self.core_status.setText("Auswahl geändert — bitte die echte Mini-Inferenz erneut testen.")
 
     def _set_busy(self, busy: bool) -> None:
@@ -360,6 +372,7 @@ class FirstRunSetupDialog(QDialog):
         self.diagnostics_output.setPlainText(
             "\n".join(f"[{item.marker}] {item.name}: {item.detail}" for item in relevant)
         )
+        self.copy_diagnostics_button.setEnabled(bool(relevant))
         if core.ready:
             self.status.setText(
                 "Der lokale Text-Backendpfad ist technisch bereit. Als Nächstes kann die Adult-/Kink-Eignung geprüft werden."
@@ -391,6 +404,29 @@ class FirstRunSetupDialog(QDialog):
         self._set_busy(False)
         if worker is not None:
             worker.deleteLater()
+
+    def copy_diagnostics(self) -> None:
+        text = self.diagnostics_output.toPlainText().strip()
+        if text:
+            QApplication.clipboard().setText(text)
+            self.status.setText("Diagnose wurde in die Zwischenablage kopiert.")
+
+    def copy_install_commands(self) -> None:
+        commands = recommended_install_commands(self._installed_models)
+        if not commands:
+            QMessageBox.information(
+                self,
+                "Kleine OSS-Modelle",
+                "Alle kleinen Empfehlungen aus dem strikten Open-Source-Katalog sind bereits installiert.",
+            )
+            return
+        QApplication.clipboard().setText("\n".join(commands))
+        QMessageBox.information(
+            self,
+            "Befehle kopiert",
+            "Die folgenden optionalen Befehle wurden kopiert. Die App führt sie nicht aus und lädt nichts selbst herunter:\n\n"
+            + "\n".join(commands),
+        )
 
     def run_model_recovery(self) -> None:
         if self._recovery_worker is not None and self._recovery_worker.isRunning():

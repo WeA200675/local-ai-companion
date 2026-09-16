@@ -315,6 +315,7 @@ class MainWindow(QMainWindow):
         self.chat.media_history_changed.connect(self.media_history.refresh)
         self.chat.media_history_changed.connect(self.character_studio.load_profile)
         self.chat.media_setup_requested.connect(self._open_media_setup)
+        self.media_test_center.setup_requested.connect(self._open_media_setup)
         self.media_history.feedback_changed.connect(
             self.settings_widget._refresh_preference_summary
         )

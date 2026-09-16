@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Callable, Iterable
 
-from app.ai.model_catalog import installed_catalog_models
+from app.ai.model_catalog import installed_catalog_models, strict_open_source_models
 from app.diagnostics import DiagnosticResult, run_diagnostics
 from app.settings import AppSettings
 from app.setup_flow import core_setup_status
@@ -54,6 +54,28 @@ def recovery_candidates(
     )
     return tuple(model.ollama_model for model in alternatives)
 
+
+
+def recommended_install_commands(
+    installed_models: Iterable[str],
+    *,
+    limit: int = 3,
+) -> tuple[str, ...]:
+    """Suggest explicit commands for the smallest strict-OSS models not installed."""
+
+    installed = {name.strip().casefold() for name in installed_models}
+    catalog = sorted(
+        strict_open_source_models(),
+        key=lambda model: (
+            _parameter_weight(model.parameter_size),
+            model.ollama_model.casefold(),
+        ),
+    )
+    return tuple(
+        f"ollama pull {model.ollama_model}"
+        for model in catalog
+        if model.ollama_model.casefold() not in installed
+    )[: max(0, limit)]
 
 def recover_first_working_model(
     settings: AppSettings,
