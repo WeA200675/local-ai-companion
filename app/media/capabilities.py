@@ -84,30 +84,70 @@ def _auto_render_controls(workflow: dict[str, Any]) -> set[str]:
 
 
 def _output_evidence(workflow: dict[str, Any]) -> set[str]:
-    """Return conservative media-kind evidence from common ComfyUI node names.
+    """Return conservative output evidence from common and custom node families.
 
-    Custom nodes are intentionally heuristic here. A profile's declared kinds
-    remain authoritative when its required prompt/seed mapping is valid.
+    Motion is accepted only when the graph contains both frame/animation evidence
+    and an animated encoder or container output. A filename alone is never enough.
     """
 
     result: set[str] = set()
+    frame_evidence = False
+    animated_output = False
+    gif_output = False
+    still_output = False
+
     for node in workflow.values():
         if not isinstance(node, dict):
             continue
-        class_type = str(node.get("class_type") or "").casefold()
+        class_type = " ".join(str(node.get("class_type") or "").casefold().split())
+        compact_type = class_type.replace("_", "").replace("-", "").replace(" ", "")
         inputs = _inputs(node) or {}
-        text = " ".join(
-            [
-                class_type,
-                str(inputs.get("format") or ""),
-                str(inputs.get("filename_prefix") or ""),
-            ]
-        ).casefold()
-        if any(token in text for token in ("saveimage", "previewimage", "image save")):
-            result.add("image")
-        if any(token in text for token in ("video", "videocombine", "vhs_", "mp4", "webm")):
-            result.add("video")
-        if any(token in text for token in ("gif", "animatedwebp", "animated webp")):
+        format_text = " ".join(
+            str(inputs.get(key) or "").casefold()
+            for key in ("format", "video_format", "container", "codec", "extension")
+        )
+        keys = {str(key).casefold() for key in inputs}
+
+        if any(token in compact_type for token in ("saveimage", "previewimage")):
+            still_output = True
+
+        if (
+            any(token in compact_type for token in (
+                "animatediff",
+                "svdimg2vid",
+                "videolatent",
+                "videomodel",
+                "frameinterpolation",
+                "rife",
+                "filminterpolation",
+                "imagesbatch",
+            ))
+            or any(key in keys for key in ("frames", "num_frames", "frame_count", "video_frames"))
+        ):
+            frame_evidence = True
+
+        if any(token in compact_type for token in (
+            "videocombine",
+            "savevideo",
+            "videoencoder",
+            "vhscombine",
+            "ffmpeg",
+        )):
+            animated_output = True
+        if any(token in format_text for token in ("mp4", "webm", "h264", "h265", "hevc", "av1")):
+            animated_output = True
+        if "gif" in compact_type or "gif" in format_text:
+            animated_output = True
+            gif_output = True
+        if "animatedwebp" in compact_type or "animated webp" in format_text:
+            animated_output = True
+            gif_output = True
+
+    if still_output:
+        result.add("image")
+    if animated_output and frame_evidence:
+        result.add("video")
+        if gif_output:
             result.add("gif")
     return result
 
